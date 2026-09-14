@@ -110,9 +110,15 @@ fn fetch_now() -> Result<(), String> {
     let run =
         fetch::newest_run(time::now())?.ok_or("NOMADS lists no HRRR run with 18 hours out yet")?;
     eprintln!("HRRR {} UTC, {} hours out", run.key(), run.unbroken().len());
-    let (dir, new) = fetch::download(&cache, &run, &s.region, &mut |done, total| {
-        eprint!("\rDownloading hour {} of {total}", done + 1);
-    })?;
+    let (dir, new) = fetch::download(
+        &cache,
+        &run,
+        &s.region,
+        &mut |done, total| {
+            eprint!("\rDownloading hour {} of {total}", done + 1);
+        },
+        &|| false,
+    )?;
     if new > 0 {
         eprintln!();
     }

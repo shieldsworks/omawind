@@ -477,7 +477,7 @@ pub async fn run(config: Config) -> io::Result<()> {
 }
 
 /// Checks NOMADS on a thread of its own, since curl blocks: at once, then
-/// every 10 minutes, or as soon as the region changes.
+/// every 10 minutes, or as soon as the region changes, even mid-download.
 fn spawn_fetcher(
     cache: PathBuf,
     mut region: Region,
@@ -490,12 +490,34 @@ fn spawn_fetcher(
             if tx.blocking_send(Event::Checking).is_err() {
                 return;
             }
+            // A new region stops a download between hours.
+            let moved = std::cell::RefCell::new(None);
+            let cancelled = || {
+                while let Ok(r) = rx.try_recv() {
+                    *moved.borrow_mut() = Some(r);
+                }
+                moved.borrow().is_some_and(|r| r != region)
+            };
             let result = fetch::newest_run(clock()).and_then(|run| {
                 let run = run.ok_or("NOMADS lists no HRRR run with 18 hours out yet")?;
-                fetch::download(&cache, &run, &region, &mut |done, total| {
-                    let _ = tx.blocking_send(Event::Downloading { done, total });
-                })
+                fetch::download(
+                    &cache,
+                    &run,
+                    &region,
+                    &mut |done, total| {
+                        let _ = tx.blocking_send(Event::Downloading { done, total });
+                    },
+                    &cancelled,
+                )
             });
+            // Then the old region's result is dropped and the new one's
+            // check starts at once.
+            if let Some(r) = moved.take()
+                && r != region
+            {
+                region = r;
+                continue;
+            }
             if tx.blocking_send(Event::Fetched(result)).is_err() {
                 return;
             }

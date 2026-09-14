@@ -146,7 +146,7 @@ impl Forecast {
     }
 
     /// A forecast of hour 0.
-    fn start(fields: &[Field]) -> Result<Forecast, String> {
+    pub(crate) fn start(fields: &[Field]) -> Result<Forecast, String> {
         let u = find(fields, 2, 2, 103, Some(10.0)).ok_or("hour 0 has no 10 m wind")?;
         let mut forecast = Forecast {
             run: u.reference,
@@ -159,7 +159,7 @@ impl Forecast {
     }
 
     /// Adds the next hour, its winds turned to true north.
-    fn push(&mut self, fields: &[Field]) -> Result<(), String> {
+    pub(crate) fn push(&mut self, fields: &[Field]) -> Result<(), String> {
         let h = self.hours.len();
         let p = pick(fields, self.run, h)?;
         if p.u.grid != self.grid {

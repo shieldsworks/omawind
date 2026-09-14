@@ -8,17 +8,18 @@
 //! area, whoever fetched them.
 
 use crate::config::Region;
-use crate::forecast::{self, Forecast, MAX_HOURS, hour_file};
+use crate::forecast::{Forecast, MAX_HOURS, hour_file};
 use crate::grib;
 use crate::time;
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 const NOMADS: &str = "https://nomads.ncep.noaa.gov";
@@ -160,15 +161,17 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so a timeout stops anything it started.
+        .process_group(0)
         .spawn()
         .map_err(|e| format!("can't run curl: {e}"))?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop(&mut child);
         return Err("curl: no pipes".into());
     };
     let over = Arc::new(AtomicBool::new(false));
-    let body = {
+    let (body_tx, body_rx) = mpsc::channel();
+    {
         let over = over.clone();
         std::thread::spawn(move || {
             let mut body = Vec::new();
@@ -176,11 +179,12 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
             if body.len() as u64 > limit {
                 over.store(true, Ordering::SeqCst);
             }
-            read.ok().map(|_| body)
-        })
-    };
+            let _ = body_tx.send(read.ok().map(|_| body));
+        });
+    }
     // Everything curl says is read; the first 64 KB is kept.
-    let why = std::thread::spawn(move || {
+    let (why_tx, why_rx) = mpsc::channel();
+    std::thread::spawn(move || {
         let (mut stderr, mut kept, mut chunk) = (stderr, Vec::new(), [0u8; 4096]);
         while let Ok(n) = stderr.read(&mut chunk) {
             if n == 0 {
@@ -190,15 +194,14 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
                 kept.extend_from_slice(&chunk[..n]);
             }
         }
-        String::from_utf8_lossy(&kept).trim().to_string()
+        let _ = why_tx.send(String::from_utf8_lossy(&kept).trim().to_string());
     });
     let started = Instant::now();
+    let left = || DEADLINE.saturating_sub(started.elapsed());
     let status = loop {
         let too_big = over.load(Ordering::SeqCst);
-        if too_big || started.elapsed() > DEADLINE {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = (body.join(), why.join());
+        if too_big || left().is_zero() {
+            stop(&mut child);
             return Err(if too_big {
                 format!("{url}: more than {} MB", limit >> 20)
             } else {
@@ -209,14 +212,17 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_millis(20)),
             Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop(&mut child);
                 return Err(format!("curl: {e}"));
             }
         }
     };
-    let body = body.join().ok().flatten();
-    let why = why.join().unwrap_or_default();
+    // curl has gone, but something it started may still hold its pipes:
+    // the rest of the answer is waited for only until the deadline.
+    let (Ok(body), Ok(why)) = (body_rx.recv_timeout(left()), why_rx.recv_timeout(left())) else {
+        kill_group(child.id());
+        return Err(format!("{url}: no answer in {} s", DEADLINE.as_secs()));
+    };
     if !status.success() {
         return Err(if why.is_empty() {
             format!("curl failed on {url}")
@@ -228,6 +234,20 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         Some(b) if b.len() as u64 <= limit => Ok(b),
         Some(_) => Err(format!("{url}: more than {} MB", limit >> 20)),
         None => Err(format!("{url}: couldn't read the answer")),
+    }
+}
+
+/// Kills curl and anything it started, then reaps it.
+fn stop(child: &mut Child) {
+    kill_group(child.id());
+    let _ = child.wait();
+}
+
+/// Only while the group has a member, so its id can't have been reused.
+fn kill_group(leader: u32) {
+    // SAFETY: a signal to the process group curl was started to lead.
+    unsafe {
+        libc::kill(-(leader as libc::pid_t), libc::SIGKILL);
     }
 }
 
@@ -302,12 +322,21 @@ pub fn load_newest(cache: &Path, region: &Region) -> (Option<(PathBuf, Forecast)
     (fallback, problem)
 }
 
-/// Checks an hour is what was asked for, its fields consistent, not an
-/// error page.
-fn check(bytes: &[u8], run: &Run, hour: u32) -> Result<(), String> {
+/// Adds an hour to a run being checked, exactly as it will be loaded:
+/// the run, the hour and the grid of the hours before it, winds turned.
+fn add(run: &mut Option<Forecast>, bytes: &[u8], reference: i64) -> Result<(), String> {
     let fields = grib::parse(bytes)?;
-    let reference = run.time().ok_or("bad run name")?;
-    forecast::pick(&fields, reference, hour as usize).map(|_| ())
+    match run {
+        Some(f) => f.push(&fields),
+        None => {
+            let f = Forecast::start(&fields)?;
+            if f.run != reference {
+                return Err("the hours are from another run".into());
+            }
+            *run = Some(f);
+            Ok(())
+        }
+    }
 }
 
 /// The cache's lock, so `omawind fetch` and the engine take turns writing
@@ -347,31 +376,46 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Downloads the hours of `run` not cached, or cached but no longer
-/// checking out. Returns its folder and how many hours were fetched.
+/// Downloads the hours of `run` not cached, or cached but not fitting:
+/// each is checked as the forecast will load it, against the hours before.
+/// `progress` hears the hour under way and the run's length; `cancelled`
+/// is asked between hours. Returns the run's folder and how many hours
+/// were fetched.
 pub fn download(
     cache: &Path,
     run: &Run,
     region: &Region,
     progress: &mut dyn FnMut(usize, usize),
+    cancelled: &dyn Fn() -> bool,
 ) -> Result<(PathBuf, usize), String> {
     let _lock = lock(cache, true)?;
     let dir = runs_dir(cache, region).join(run.key());
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let good = |h: u32| {
-        std::fs::read(dir.join(hour_file(h))).is_ok_and(|bytes| check(&bytes, run, h).is_ok())
-    };
-    let missing: Vec<u32> = run.unbroken().into_iter().filter(|&h| !good(h)).collect();
-    for (done, &hour) in missing.iter().enumerate() {
-        progress(done, missing.len());
-        if done > 0 {
+    let reference = run.time().ok_or("bad run name")?;
+    let hours = run.unbroken();
+    let mut checked: Option<Forecast> = None;
+    let mut fetched = 0;
+    for &hour in &hours {
+        let path = dir.join(hour_file(hour));
+        if let Ok(bytes) = std::fs::read(&path)
+            && add(&mut checked, &bytes, reference).is_ok()
+        {
+            continue;
+        }
+        if cancelled() {
+            return Err("stopped: the region changed".into());
+        }
+        progress(hour as usize, hours.len());
+        if fetched > 0 {
             std::thread::sleep(PAUSE);
         }
         let bytes = get(&filter_url(run, hour, region), HOUR_LIMIT)?;
-        check(&bytes, run, hour).map_err(|e| format!("{} hour {hour}: {e}", run.key()))?;
-        write_atomic(&dir.join(hour_file(hour)), &bytes)?;
+        add(&mut checked, &bytes, reference)
+            .map_err(|e| format!("{} hour {hour}: {e}", run.key()))?;
+        write_atomic(&path, &bytes)?;
+        fetched += 1;
     }
-    Ok((dir, missing.len()))
+    Ok((dir, fetched))
 }
 
 /// Deletes a region's runs older than the newest one named, except those
@@ -526,6 +570,22 @@ mod tests {
         assert!(found.is_none());
         assert!(problem.unwrap().contains("not GRIB"));
         std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn an_hour_counts_only_if_it_fits_the_run() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hrrr/2026091403");
+        let hour = |h: u32| std::fs::read(fixture.join(hour_file(h))).unwrap();
+        let three = time::unix(2026, 9, 14, 3, 0, 0);
+        // Another run's first hour.
+        assert!(add(&mut None, &hour(0), three + 3600).is_err());
+        let mut run = None;
+        add(&mut run, &hour(0), three).unwrap();
+        // Hour 2 where hour 1 belongs.
+        assert!(add(&mut run, &hour(2), three).is_err());
+        add(&mut run, &hour(1), three).unwrap();
+        add(&mut run, &hour(2), three).unwrap();
+        assert_eq!(run.unwrap().hours.len(), 3);
     }
 
     #[test]
