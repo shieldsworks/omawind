@@ -68,75 +68,122 @@ fn find(
     })
 }
 
+/// The fields omawind reads from one hour's file.
+pub struct Picked<'a> {
+    pub u: &'a Field,
+    pub v: &'a Field,
+    pub gust: Option<&'a Field>,
+    pub pressure: Option<&'a Field>,
+}
+
+/// Picks out an hour's fields, checked against each other, the run and
+/// the hour.
+pub fn pick(fields: &[Field], run: i64, hour: usize) -> Result<Picked<'_>, String> {
+    let (Some(u), Some(v)) = (
+        find(fields, 2, 2, 103, Some(10.0)),
+        find(fields, 2, 3, 103, Some(10.0)),
+    ) else {
+        return Err(format!("hour {hour} has no 10 m wind"));
+    };
+    let gust = find(fields, 2, 22, 1, None);
+    let pressure = find(fields, 3, 198, 101, None).or(find(fields, 3, 1, 101, None));
+    for f in [Some(u), Some(v), gust, pressure].into_iter().flatten() {
+        if f.grid != u.grid
+            || f.values.len() != u.grid.len()
+            || f.reference != run
+            || f.lead != hour as i64 * 3600
+        {
+            return Err(format!(
+                "hour {hour}: {} doesn't match the run, hour or grid",
+                f.name()
+            ));
+        }
+    }
+    Ok(Picked {
+        u,
+        v,
+        gust,
+        pressure,
+    })
+}
+
 impl Forecast {
-    /// A run's hour files, `f00.grib2` onward, as far as they run unbroken.
+    /// A run's hour files, `f00.grib2` onward, as far as they run unbroken
+    /// and good. A bad hour ends the forecast there; a bad first hour, or
+    /// none, is an error.
     pub fn load(dir: &Path) -> Result<Forecast, String> {
-        let mut hours: Vec<Vec<Field>> = Vec::new();
+        let mut forecast: Option<Forecast> = None;
         for hour in 0..=MAX_HOURS {
             let path = dir.join(hour_file(hour));
             let Ok(bytes) = std::fs::read(&path) else {
                 break;
             };
-            let fields = grib::parse(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-            hours.push(fields);
+            let added = grib::parse(&bytes).and_then(|fields| {
+                if let Some(f) = forecast.as_mut() {
+                    f.push(&fields)
+                } else {
+                    Forecast::start(&fields).map(|f| forecast = Some(f))
+                }
+            });
+            if let Err(e) = added {
+                if forecast.is_none() {
+                    return Err(format!("{}: {e}", path.display()));
+                }
+                break;
+            }
         }
-        Forecast::from_hours(hours).map_err(|e| format!("{}: {e}", dir.display()))
+        forecast.ok_or_else(|| format!("{}: no forecast hours", dir.display()))
     }
 
     /// Each element holds one forecast hour's fields, hour 0 first.
     pub fn from_hours(hours: Vec<Vec<Field>>) -> Result<Forecast, String> {
-        let mut out: Option<Forecast> = None;
-        for (h, fields) in hours.into_iter().enumerate() {
-            let (Some(u), Some(v)) = (
-                find(&fields, 2, 2, 103, Some(10.0)),
-                find(&fields, 2, 3, 103, Some(10.0)),
-            ) else {
-                return Err(format!("hour {h} has no 10 m wind"));
-            };
-            let gust = find(&fields, 2, 22, 1, None);
-            let pressure = find(&fields, 3, 198, 101, None).or(find(&fields, 3, 1, 101, None));
-            let used = [Some(u), Some(v), gust, pressure];
-            for f in used.iter().flatten() {
-                if f.grid != u.grid
-                    || f.values.len() != u.grid.len()
-                    || f.reference != u.reference
-                    || f.lead != h as i64 * 3600
-                {
-                    return Err(format!(
-                        "hour {h}: {} doesn't match the run, hour or grid",
-                        f.name()
-                    ));
-                }
-            }
-            let forecast = out.get_or_insert_with(|| {
-                let positions = (0..u.grid.len()).map(|i| u.grid.position(i)).collect();
-                Forecast {
-                    run: u.reference,
-                    grid: u.grid.clone(),
-                    positions,
-                    hours: Vec::new(),
-                }
-            });
-            if u.grid != forecast.grid || u.reference != forecast.run {
-                return Err(format!("hour {h} is from another run or grid"));
-            }
-            let (mut east, mut north) = (u.values.clone(), v.values.clone());
-            for (i, (e, n)) in east.iter_mut().zip(north.iter_mut()).enumerate() {
-                let (a, b) =
-                    forecast
-                        .grid
-                        .to_earth(f64::from(*e), f64::from(*n), forecast.positions[i].1);
-                (*e, *n) = (a as f32, b as f32);
-            }
-            forecast.hours.push(Hour {
-                valid: u.valid(),
-                u: east,
-                v: north,
-                gust: gust.map(|f| f.values.clone()),
-                pressure: pressure.map(|f| f.values.clone()),
-            });
+        let (first, rest) = hours.split_first().ok_or("no forecast hours")?;
+        let mut forecast = Forecast::start(first)?;
+        for fields in rest {
+            forecast.push(fields)?;
         }
-        out.ok_or_else(|| "no forecast hours".into())
+        Ok(forecast)
+    }
+
+    /// A forecast of hour 0.
+    fn start(fields: &[Field]) -> Result<Forecast, String> {
+        let u = find(fields, 2, 2, 103, Some(10.0)).ok_or("hour 0 has no 10 m wind")?;
+        let mut forecast = Forecast {
+            run: u.reference,
+            grid: u.grid.clone(),
+            positions: (0..u.grid.len()).map(|i| u.grid.position(i)).collect(),
+            hours: Vec::new(),
+        };
+        forecast.push(fields)?;
+        Ok(forecast)
+    }
+
+    /// Adds the next hour, its winds turned to true north.
+    fn push(&mut self, fields: &[Field]) -> Result<(), String> {
+        let h = self.hours.len();
+        let p = pick(fields, self.run, h)?;
+        if p.u.grid != self.grid {
+            return Err(format!("hour {h} is on another grid"));
+        }
+        let (mut east, mut north) = (p.u.values.clone(), p.v.values.clone());
+        for (i, (e, n)) in east.iter_mut().zip(north.iter_mut()).enumerate() {
+            let (a, b) = self
+                .grid
+                .to_earth(f64::from(*e), f64::from(*n), self.positions[i].1);
+            (*e, *n) = (a as f32, b as f32);
+            // A gap stays a gap; a wind beyond f32 isn't a wind.
+            if e.is_infinite() || n.is_infinite() {
+                return Err(format!("hour {h} has a wind too strong to be real"));
+            }
+        }
+        self.hours.push(Hour {
+            valid: p.u.valid(),
+            u: east,
+            v: north,
+            gust: p.gust.map(|f| f.values.clone()),
+            pressure: p.pressure.map(|f| f.values.clone()),
+        });
+        Ok(())
     }
 
     pub fn first(&self) -> i64 {
@@ -208,7 +255,7 @@ impl Forecast {
             let mut sum = 0.0;
             for &(i, weight) in points.iter().filter(|p| p.1 > 0.0) {
                 let v = f64::from(values[i]);
-                if v.is_nan() {
+                if !v.is_finite() {
                     return None;
                 }
                 sum += v * weight;
@@ -355,6 +402,17 @@ mod tests {
             f.sample((lat + lat2) / 2.0, (lon + lon2) / 2.0, 0)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_wind_too_strong_to_turn_is_refused() {
+        let mut fields = hour(0, false, vec![3e38; 4]);
+        fields[1].values = vec![3e38; 4];
+        for f in &mut fields {
+            f.grid.winds_along_grid = true;
+        }
+        let e = Forecast::from_hours(vec![fields]).err().unwrap();
+        assert!(e.contains("too strong"), "{e}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The engine end to end: a cached run in, an app's view out, the boat's
 //! position from a stand-in omakeel. The clock is pinned inside the run.
 
-use omawind::{engine, time};
+use omawind::{config::Region, engine, fetch, time};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio::{
@@ -27,9 +27,9 @@ fn six_utc() -> i64 {
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("omawind-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let run = dir.join("cache/hrrr/2026091403");
+    let run = fetch::runs_dir(&dir.join("cache"), &Region::BAY).join("2026091403");
     std::fs::create_dir_all(&run).unwrap();
-    for f in ["f00.grib2", "f01.grib2", "f02.grib2", "region"] {
+    for f in ["f00.grib2", "f01.grib2", "f02.grib2"] {
         std::fs::copy(Path::new(RUN).join(f), run.join(f)).unwrap();
     }
     dir

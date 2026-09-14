@@ -146,7 +146,11 @@ fn message(m: &[u8], out: &mut Vec<Field>, budget: &mut usize) -> Result<(), Str
                 reference = Some(time::parse_iso(&text).ok_or("impossible reference time")?);
             }
             2 => {}
-            3 => grid = Some(grid_section(s)?),
+            3 => {
+                grid = Some(grid_section(s)?);
+                // A bitmap describes the grid before it, never a new one.
+                bitmap = None;
+            }
             4 => product = Some(product_section(s)?),
             5 => packing = Some(packing_section(s)?),
             6 => {
@@ -187,6 +191,9 @@ fn message(m: &[u8], out: &mut Vec<Field>, budget: &mut usize) -> Result<(), Str
                         "data before its identification, grid, product, packing or bitmap".into(),
                     );
                 };
+                if map.as_ref().is_some_and(|m| m.len() != g.len()) {
+                    return Err("bitmap doesn't fit the grid".into());
+                }
                 *budget = budget
                     .checked_sub(g.len())
                     .ok_or("too many values to decode in one file")?;
@@ -592,6 +599,20 @@ mod tests {
             section(7, &[0, 1, 2, 3]),
         ]);
         assert!(parse(&m).unwrap_err().contains("another grid"));
+    }
+
+    #[test]
+    fn refuses_a_grid_changed_after_its_bitmap() {
+        let m = wrap(&[
+            identification(),
+            lambert(3, 3),
+            product(),
+            simple(9, 1.0, [0, 0], [0, 0], 8),
+            bitmap(0, &[0xff, 0x80]),
+            lambert(2, 2),
+            section(7, &[0; 9]),
+        ]);
+        assert!(parse(&m).unwrap_err().contains("bitmap"));
     }
 
     #[test]

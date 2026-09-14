@@ -3,11 +3,12 @@
 //! region and the four fields omawind reads, about 32 KB for the Bay.
 //! Downloads go through `curl`, as omahelm's do.
 //!
-//! Cache: `<cache>/hrrr/<YYYYMMDDHH>/f00.grib2`… with a `region` file
-//! naming the area the hours were cut to.
+//! Cache: `<cache>/hrrr/<south>_<west>_<north>_<east>/<YYYYMMDDHH>/f00.grib2`
+//! and on: a folder per region, so a run's hours are only ever cut to one
+//! area, whoever fetched them.
 
 use crate::config::Region;
-use crate::forecast::{MAX_HOURS, hour_file};
+use crate::forecast::{self, Forecast, MAX_HOURS, hour_file};
 use crate::grib;
 use crate::time;
 use std::collections::BTreeMap;
@@ -16,8 +17,9 @@ use std::io::Read;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const NOMADS: &str = "https://nomads.ncep.noaa.gov";
 const USER_AGENT: &str = concat!(
@@ -34,6 +36,8 @@ const PAUSE: Duration = Duration::from_millis(300);
 /// the biggest region's under half a megabyte, a day's listing 100 KB.
 const LISTING_LIMIT: u64 = 8 << 20;
 const HOUR_LIMIT: u64 = 16 << 20;
+/// curl gives up after 120 seconds; this is in case curl itself hangs.
+const DEADLINE: Duration = Duration::from_secs(150);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Run {
@@ -132,7 +136,10 @@ pub fn filter_url(run: &Run, hour: u32, r: &Region) -> String {
 }
 
 /// NOMADS answers over HTTP/2 with a header curl rejects, so HTTP/1.1.
-/// No more than `limit` bytes are read, whatever the server says.
+/// No more than `limit` bytes are kept, whatever the server says, and
+/// curl is stopped after `DEADLINE` whatever it's doing. Both of its pipes
+/// are read at once, so it never waits on one while omawind waits on the
+/// other.
 fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut child = Command::new("curl")
         .args([
@@ -155,30 +162,73 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("can't run curl: {e}"))?;
-    let mut body = Vec::new();
-    let read = child
-        .stdout
-        .take()
-        .map(|out| out.take(limit + 1).read_to_end(&mut body));
-    if !matches!(read, Some(Ok(_))) || body.len() as u64 > limit {
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(format!("{url}: no answer, or more than {} MB", limit >> 20));
-    }
-    let mut why = String::new();
-    if let Some(err) = child.stderr.take() {
-        let _ = err.take(64 * 1024).read_to_string(&mut why);
-    }
-    let status = child.wait().map_err(|e| format!("curl: {e}"))?;
+        return Err("curl: no pipes".into());
+    };
+    let over = Arc::new(AtomicBool::new(false));
+    let body = {
+        let over = over.clone();
+        std::thread::spawn(move || {
+            let mut body = Vec::new();
+            let read = stdout.take(limit + 1).read_to_end(&mut body);
+            if body.len() as u64 > limit {
+                over.store(true, Ordering::SeqCst);
+            }
+            read.ok().map(|_| body)
+        })
+    };
+    // Everything curl says is read; the first 64 KB is kept.
+    let why = std::thread::spawn(move || {
+        let (mut stderr, mut kept, mut chunk) = (stderr, Vec::new(), [0u8; 4096]);
+        while let Ok(n) = stderr.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            if kept.len() < 64 * 1024 {
+                kept.extend_from_slice(&chunk[..n]);
+            }
+        }
+        String::from_utf8_lossy(&kept).trim().to_string()
+    });
+    let started = Instant::now();
+    let status = loop {
+        let too_big = over.load(Ordering::SeqCst);
+        if too_big || started.elapsed() > DEADLINE {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = (body.join(), why.join());
+            return Err(if too_big {
+                format!("{url}: more than {} MB", limit >> 20)
+            } else {
+                format!("{url}: no answer in {} s", DEADLINE.as_secs())
+            });
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => std::thread::sleep(Duration::from_millis(20)),
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("curl: {e}"));
+            }
+        }
+    };
+    let body = body.join().ok().flatten();
+    let why = why.join().unwrap_or_default();
     if !status.success() {
-        let why = why.trim();
         return Err(if why.is_empty() {
             format!("curl failed on {url}")
         } else {
-            why.to_string()
+            why
         });
     }
-    Ok(body)
+    match body {
+        Some(b) if b.len() as u64 <= limit => Ok(b),
+        Some(_) => Err(format!("{url}: more than {} MB", limit >> 20)),
+        None => Err(format!("{url}: couldn't read the answer")),
+    }
 }
 
 /// The newest run with its first 18 hours out, from today's listing, or
@@ -202,60 +252,68 @@ pub fn newest_run(now: i64) -> Result<Option<Run>, String> {
     Ok(None)
 }
 
-pub fn runs_dir(cache: &Path) -> PathBuf {
-    cache.join("hrrr")
+/// The region's folder of runs.
+pub fn runs_dir(cache: &Path, region: &Region) -> PathBuf {
+    cache.join("hrrr").join(region.key().replace(',', "_"))
 }
 
 fn is_run_name(name: &str) -> bool {
     name.len() == 10 && name.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// The run to show: the newest whose first 18 hours are cached for this
-/// region, else the newest with any hours at all, since an old forecast
-/// said to be old beats none.
-pub fn newest_cached(cache: &Path, region: &Region) -> Option<PathBuf> {
-    let mut runs: Vec<(String, PathBuf, usize)> = std::fs::read_dir(runs_dir(cache))
-        .ok()?
+/// The runs cached for a region, newest first.
+pub fn cached_runs(cache: &Path, region: &Region) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(runs_dir(cache, region)) else {
+        return Vec::new();
+    };
+    let mut runs: Vec<(String, PathBuf)> = rd
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().to_str()?.to_string();
-            let path = e.path();
-            let region_ok =
-                std::fs::read_to_string(path.join("region")).ok()?.trim() == region.key();
-            let hours = (0..=MAX_HOURS)
-                .take_while(|&h| path.join(hour_file(h)).is_file())
-                .count();
-            (is_run_name(&name) && region_ok && hours > 0).then_some((name, path, hours))
+            (is_run_name(&name) && e.path().is_dir()).then(|| (name, e.path()))
         })
         .collect();
     runs.sort();
-    let ready = runs.iter().rev().find(|r| r.2 > READY_HOURS as usize);
-    ready.or(runs.last()).map(|r| r.1.clone())
+    runs.into_iter().rev().map(|(_, path)| path).collect()
 }
 
-/// Checks a downloaded hour is what was asked for, not an error page.
+/// The forecast to show: the newest cached run with its first 18 hours
+/// good, else the newest with any good hours, since an old forecast said
+/// to be old beats none. With it, what was wrong with a newer run that
+/// couldn't be read at all.
+pub fn load_newest(cache: &Path, region: &Region) -> (Option<(PathBuf, Forecast)>, Option<String>) {
+    let mut fallback = None;
+    let mut problem = None;
+    for dir in cached_runs(cache, region) {
+        match Forecast::load(&dir) {
+            Ok(f) if f.hours.len() > READY_HOURS as usize => return (Some((dir, f)), problem),
+            Ok(f) => {
+                if fallback.is_none() {
+                    fallback = Some((dir, f));
+                }
+            }
+            Err(e) => {
+                if fallback.is_none() && problem.is_none() {
+                    problem = Some(e);
+                }
+            }
+        }
+    }
+    (fallback, problem)
+}
+
+/// Checks an hour is what was asked for, its fields consistent, not an
+/// error page.
 fn check(bytes: &[u8], run: &Run, hour: u32) -> Result<(), String> {
     let fields = grib::parse(bytes)?;
     let reference = run.time().ok_or("bad run name")?;
-    let wind = |number: u8| {
-        fields.iter().any(|f| {
-            (f.discipline, f.category, f.number, f.surface) == (0, 2, number, 103)
-                && f.level == Some(10.0)
-                && f.reference == reference
-                && f.lead == i64::from(hour) * time::HOUR
-        })
-    };
-    if wind(2) && wind(3) {
-        Ok(())
-    } else {
-        Err("the download has no 10 m wind for that hour".into())
-    }
+    forecast::pick(&fields, reference, hour as usize).map(|_| ())
 }
 
 /// The cache's lock, so `omawind fetch` and the engine take turns writing
 /// it. Without `wait`, None when the other has it.
 fn lock(cache: &Path, wait: bool) -> Result<Option<File>, String> {
-    let dir = runs_dir(cache);
+    let dir = cache.join("hrrr");
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let path = dir.join(".lock");
     let file = OpenOptions::new()
@@ -289,8 +347,8 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Downloads the hours of `run` not yet cached. Returns its folder and how
-/// many hours were new.
+/// Downloads the hours of `run` not cached, or cached but no longer
+/// checking out. Returns its folder and how many hours were fetched.
 pub fn download(
     cache: &Path,
     run: &Run,
@@ -298,26 +356,12 @@ pub fn download(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(PathBuf, usize), String> {
     let _lock = lock(cache, true)?;
-    let dir = runs_dir(cache).join(run.key());
+    let dir = runs_dir(cache, region).join(run.key());
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let region_file = dir.join("region");
-    if std::fs::read_to_string(&region_file)
-        .ok()
-        .as_deref()
-        .map(str::trim)
-        != Some(&region.key())
-    {
-        // Hours cut to another region are no use: start the run again.
-        for h in 0..=MAX_HOURS {
-            let _ = std::fs::remove_file(dir.join(hour_file(h)));
-        }
-        write_atomic(&region_file, format!("{}\n", region.key()).as_bytes())?;
-    }
-    let missing: Vec<u32> = run
-        .unbroken()
-        .into_iter()
-        .filter(|&h| !dir.join(hour_file(h)).is_file())
-        .collect();
+    let good = |h: u32| {
+        std::fs::read(dir.join(hour_file(h))).is_ok_and(|bytes| check(&bytes, run, h).is_ok())
+    };
+    let missing: Vec<u32> = run.unbroken().into_iter().filter(|&h| !good(h)).collect();
     for (done, &hour) in missing.iter().enumerate() {
         progress(done, missing.len());
         if done > 0 {
@@ -330,17 +374,17 @@ pub fn download(
     Ok((dir, missing.len()))
 }
 
-/// Deletes cached runs older than the newest one named, except those
+/// Deletes a region's runs older than the newest one named, except those
 /// named. A newer run, perhaps just fetched by another omawind, stays.
 /// Skipped while another omawind is writing the cache.
-pub fn prune(cache: &Path, keep: &[&Path]) {
+pub fn prune(cache: &Path, region: &Region, keep: &[&Path]) {
     let Some(newest) = keep.iter().filter_map(|p| p.file_name()).max() else {
         return;
     };
     let Ok(Some(_lock)) = lock(cache, false) else {
         return;
     };
-    let Ok(rd) = std::fs::read_dir(runs_dir(cache)) else {
+    let Ok(rd) = std::fs::read_dir(runs_dir(cache, region)) else {
         return;
     };
     for e in rd.flatten() {
@@ -362,6 +406,13 @@ mod tests {
         <a href="hrrr.t03z.wrfsfcf00.grib2">x</a><a href="hrrr.t03z.wrfsfcf01.grib2">x</a>
         <a href="hrrr.t03z.wrfprsf00.grib2">x</a><a href="hrrr.t3z.wrfsfcf02.grib2">x</a>
         <a href="hrrr.t25z.wrfsfcf00.grib2">x</a><a href="hrrr.t03z.wrfsfcf03.grib2">x</a>"#;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("omawind-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn reads_runs_from_a_listing() {
@@ -407,35 +458,85 @@ mod tests {
     }
 
     #[test]
-    fn picks_a_complete_run_over_a_newer_partial_one() {
-        let cache = std::env::temp_dir().join(format!("omawind-cache-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&cache);
-        let make = |name: &str, hours: u32, region: &Region| {
-            let dir = runs_dir(&cache).join(name);
-            std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(dir.join("region"), region.key()).unwrap();
-            for h in 0..hours {
-                std::fs::write(dir.join(hour_file(h)), b"").unwrap();
-            }
-            dir
-        };
+    fn keeps_regions_apart_and_prunes_only_older_runs() {
+        let cache = scratch("prune");
         let other = Region {
             south: 47.0,
             west: -123.5,
             north: 48.8,
             east: -122.0,
         };
-        let old = make("2026091401", 19, &Region::BAY);
-        make("2026091402", 5, &Region::BAY);
-        make("2026091403", 19, &other);
-        assert_eq!(newest_cached(&cache, &Region::BAY), Some(old.clone()));
-        let newer = make("2026091404", 19, &Region::BAY);
-        assert_eq!(newest_cached(&cache, &Region::BAY), Some(newer.clone()));
-        prune(&cache, &[&newer]);
-        assert!(!old.exists() && newer.exists());
-        let newest = make("2026091405", 3, &Region::BAY);
-        prune(&cache, &[&newer]);
+        let make = |region: &Region, name: &str| {
+            let dir = runs_dir(&cache, region).join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        };
+        let old = make(&Region::BAY, "2026091401");
+        let newer = make(&Region::BAY, "2026091404");
+        let elsewhere = make(&other, "2026091402");
+        make(&Region::BAY, "notarun");
+        assert_eq!(
+            cached_runs(&cache, &Region::BAY),
+            [newer.clone(), old.clone()]
+        );
+        assert_eq!(
+            cached_runs(&cache, &other),
+            std::slice::from_ref(&elsewhere)
+        );
+        prune(&cache, &Region::BAY, &[&newer]);
+        assert!(!old.exists() && newer.exists() && elsewhere.exists());
+        let newest = make(&Region::BAY, "2026091405");
+        prune(&cache, &Region::BAY, &[&newer]);
         assert!(newest.exists() && newer.exists());
         std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn loads_the_good_hours_and_passes_over_a_broken_run() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hrrr/2026091403");
+        let cache = scratch("load");
+        let copy = |name: &str| {
+            let dir = runs_dir(&cache, &Region::BAY).join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            for h in 0..3 {
+                std::fs::copy(fixture.join(hour_file(h)), dir.join(hour_file(h))).unwrap();
+            }
+            dir
+        };
+        let good = copy("2026091403");
+        let broken = copy("2026091404");
+        std::fs::write(
+            broken.join("f00.grib2"),
+            b"<html>Request for Future Data</html>",
+        )
+        .unwrap();
+        let (found, problem) = load_newest(&cache, &Region::BAY);
+        let (dir, f) = found.unwrap();
+        assert_eq!((dir, f.hours.len()), (good.clone(), 3));
+        // The broken newer run is said, though an older one is shown.
+        assert!(problem.unwrap().contains("not GRIB"));
+        // A bad hour after the first ends the forecast there.
+        std::fs::remove_dir_all(&broken).unwrap();
+        std::fs::write(good.join("f02.grib2"), b"GRIB").unwrap();
+        let (found, _) = load_newest(&cache, &Region::BAY);
+        assert_eq!(found.unwrap().1.hours.len(), 2);
+        // Nothing good at all: say why.
+        std::fs::write(good.join("f00.grib2"), b"<html>").unwrap();
+        let (found, problem) = load_newest(&cache, &Region::BAY);
+        assert!(found.is_none());
+        assert!(problem.unwrap().contains("not GRIB"));
+        std::fs::remove_dir_all(&cache).unwrap();
+    }
+
+    #[test]
+    fn keeps_no_more_than_the_limit() {
+        let dir = scratch("get");
+        let file = dir.join("answer");
+        std::fs::write(&file, vec![b'x'; 5000]).unwrap();
+        let url = format!("file://{}", file.display());
+        assert_eq!(get(&url, 5000).unwrap().len(), 5000);
+        assert!(get(&url, 4999).is_err());
+        assert!(get(&format!("file://{}", dir.join("missing").display()), 5000).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

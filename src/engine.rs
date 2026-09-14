@@ -92,21 +92,21 @@ struct Wind {
 }
 
 impl Wind {
+    /// The newest good run cached. What's on show stays while nothing
+    /// cached can be read, and the problem is said.
     fn load_newest(&mut self) {
-        let dir = fetch::newest_cached(&self.config.cache, &self.settings.region);
-        match dir.as_deref().map(Forecast::load) {
-            Some(Ok(f)) => {
+        let (found, problem) = fetch::load_newest(&self.config.cache, &self.settings.region);
+        self.load_problem = problem;
+        match found {
+            Some((dir, f)) => {
                 self.forecast = Some(f);
-                self.run_dir = dir;
-                self.load_problem = None;
+                self.run_dir = Some(dir);
             }
-            Some(Err(e)) => {
-                self.load_problem = Some(e);
-            }
-            None => {
+            None if self.load_problem.is_none() => {
                 self.forecast = None;
                 self.run_dir = None;
             }
+            None => {}
         }
     }
 
@@ -396,17 +396,16 @@ pub async fn run(config: Config) -> io::Result<()> {
                     wind.fetch.status = "downloading";
                     wind.fetch.progress = Some((done, total));
                 }
-                Event::Fetched(Ok((dir, new))) => {
+                Event::Fetched(Ok((dir, _))) => {
                     wind.fetch.status = "idle";
                     wind.fetch.progress = None;
                     wind.fetch.message = None;
                     wind.fetch.checked = Some(now);
-                    // A new run, or new hours of this one.
-                    if new > 0 || wind.run_dir.as_ref() != Some(&dir) {
-                        wind.load_newest();
-                    }
+                    // A new run, new hours of this one, or hours another
+                    // omawind fetched: reading the cache again is cheap.
+                    wind.load_newest();
                     if let Some(shown) = wind.run_dir.clone() {
-                        fetch::prune(&wind.config.cache, &[&shown, &dir]);
+                        fetch::prune(&wind.config.cache, &wind.settings.region, &[&shown, &dir]);
                     }
                 }
                 Event::Fetched(Err(e)) => {

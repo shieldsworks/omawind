@@ -124,7 +124,7 @@ fn fetch_now() -> Result<(), String> {
         time::iso(f.first()),
         time::iso(f.last())
     );
-    fetch::prune(&cache, &[&dir]);
+    fetch::prune(&cache, &s.region, &[&dir]);
     Ok(())
 }
 
@@ -137,9 +137,10 @@ fn at(position: Option<&str>) -> Result<(), String> {
             .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
             .ok_or("expected LAT,LON in degrees, like 37.8663,-122.3148")?,
     };
-    let dir = fetch::newest_cached(&config::cache_dir(), &s.region)
-        .ok_or("nothing cached for the region yet: run omawind fetch")?;
-    let f = Forecast::load(&dir)?;
+    let (found, problem) = fetch::load_newest(&config::cache_dir(), &s.region);
+    let (_, f) = found.ok_or_else(|| {
+        problem.unwrap_or_else(|| "nothing cached for the region yet: run omawind fetch".into())
+    })?;
     println!("HRRR {} at {lat:.4}, {lon:.4}", time::iso(f.run));
     println!(
         "{:<21} {:>5} {:>6} {:>6} {:>8}",

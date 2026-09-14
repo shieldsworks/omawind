@@ -146,7 +146,9 @@ Marina. Problems are reported in `state.problems` and the defaults kept.
 
 ## Files
 
-- Runs: `$XDG_CACHE_HOME/omawind/hrrr/<YYYYMMDDHH>/f00.grib2` and on, one
-  GRIB2 file per hour, as NOAA's NOMADS filter cut them, with a `region`
-  file naming the area. Runs other than the one in use and the newest are
+- Runs: `$XDG_CACHE_HOME/omawind/hrrr/<south>_<west>_<north>_<east>/<YYYYMMDDHH>/f00.grib2`
+  and on: one GRIB2 file per hour, as NOAA's NOMADS filter cut them, in a
+  folder for the region. The newest run with its first 18 hours good is
+  used, else the newest with any. An hour that doesn't check out ends the
+  forecast there and is fetched again. Runs older than the one in use are
   deleted.
