@@ -181,8 +181,47 @@ async fn an_app_sees_the_wind_at_home_then_at_the_boat() {
         (Some(8), Some("2026-09-14T05:00:00Z"))
     );
 
+    // The wind at one point, as `here` works it out: at the boat, it's the
+    // boat's wind.
+    app.send(r#"{"type":"point","id":"p1","lat":37.652249,"lon":-122.408667}"#)
+        .await;
+    let point = app.next_of("point").await;
+    assert_eq!(point["id"], "p1");
+    assert_eq!(point["time"], state["here"]["time"]);
+    assert_eq!(point["run"], "2026-09-14T03:00:00Z");
+    assert_eq!(
+        (&point["speedKn"], &point["dirDeg"]),
+        (&state["here"]["speedKn"], &state["here"]["dirDeg"])
+    );
+    app.send(r#"{"type":"point","id":"p2","lat":37.8,"lon":-122.4,"time":"2026-09-14T05:00:00Z"}"#)
+        .await;
+    let later = app.next_of("point").await;
+    assert_eq!(later["time"], "2026-09-14T05:00:00Z");
+    assert!(later["speedKn"].is_number() && later["gustKn"].is_number());
+    // Off the grid: an answer, with no numbers.
+    app.send(r#"{"type":"point","id":"p3","lat":10,"lon":-122.4}"#)
+        .await;
+    let off = app.next_of("point").await;
+    assert_eq!(off["note"], "outside the forecast area");
+    assert!(off.get("speedKn").is_none());
+
     // Bad requests are answered, and the connection carries on.
     for (request, id, says) in [
+        (
+            r#"{"type":"point","id":14,"lat":"37.8","lon":-122.4}"#,
+            Some(14),
+            "lat must be a number",
+        ),
+        (
+            r#"{"type":"point","id":15,"lat":37.8,"lon":-222.4}"#,
+            Some(15),
+            "lon must be a number",
+        ),
+        (
+            r#"{"type":"point","id":16,"lat":37.8,"lon":-122.4,"time":"2026-09-15T00:00:00Z"}"#,
+            Some(16),
+            "outside the forecast",
+        ),
         ("nonsense", None, "not a JSON object"),
         (
             r#"{"type":"field","id":9,"south":1}"#,
