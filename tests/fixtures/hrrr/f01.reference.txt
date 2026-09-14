@@ -1,0 +1,48 @@
+# eccodes 2.48.2, bay-f01.grib2
+field gust discipline=0 category=2 number=22 level_type=sfc level=0 nx=82 ny=88 hour=1 sum=74975.277977 min=0.317337 max=18.629837
+  value gust 0 15.004837
+  value gust 1 15.004837
+  value gust 81 6.254837
+  value gust 82 14.942337
+  value gust 3000 8.942337
+  value gust 4321 3.192337
+  value gust 7215 3.879837
+field mslma discipline=0 category=3 number=198 level_type=sfc level=0 nx=82 ny=88 hour=1 sum=732682184.000000 min=101295.000000 max=101794.000000
+  value mslma 0 101719.000000
+  value mslma 1 101713.000000
+  value mslma 81 101295.000000
+  value mslma 82 101720.000000
+  value mslma 3000 101514.000000
+  value mslma 4321 101454.000000
+  value mslma 7215 101357.000000
+field 10u discipline=0 category=2 number=2 level_type=sfc level=10 nx=82 ny=88 hour=1 sum=16675.781845 min=-3.361865 max=9.013135
+  value 10u 0 2.450635
+  value 10u 1 2.513135
+  value 10u 81 3.763135
+  value 10u 82 2.450635
+  value 10u 3000 4.075635
+  value 10u 4321 1.888135
+  value 10u 7215 3.138135
+field 10v discipline=0 category=2 number=3 level_type=sfc level=10 nx=82 ny=88 hour=1 sum=-41555.966583 min=-12.414465 max=5.023035
+  value 10v 0 -11.164465
+  value 10v 1 -11.164465
+  value 10v 81 -0.476965
+  value 10v 82 -11.101965
+  value 10v 3000 -2.476965
+  value 10v 4321 0.148035
+  value 10v 7215 -1.914465
+latlon 0 36.364046 -123.635023
+latlon 1 36.371595 -123.602881
+latlon 81 36.946051 -121.010803
+latlon 82 36.389926 -123.644406
+latlon 3000 37.652249 -122.408667
+latlon 4321 38.132984 -122.257927
+latlon 7215 39.214360 -121.776206
+latlon_max_index 7215
+wind 0 theta=16.269434 speed_ms=11.430262 from_deg=331.350304
+wind 1 theta=16.249425 speed_ms=11.443825 from_deg=331.064670
+wind 81 theta=14.635819 speed_ms=3.793241 from_deg=262.587715
+wind 82 theta=16.275275 speed_ms=11.369223 from_deg=331.276934
+wind 3000 theta=15.506010 speed_ms=4.769293 from_deg=285.783110
+wind 4321 theta=15.412172 speed_ms=1.893929 from_deg=250.104850
+wind 7215 theta=15.112294 speed_ms=3.676012 from_deg=286.273594

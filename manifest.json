@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "org.omahoy.wind",
+  "name": "Omawind",
+  "version": "0.1.0",
+  "author": "Casey Shields",
+  "license": "MIT",
+  "homepage": "https://omahoy.org",
+  "description": "Forecast wind at the boat, from NOAA's HRRR, decoded from GRIB from scratch",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "ui/WindBar.qml"
+  },
+  "barWidget": {
+    "displayName": "Omawind",
+    "description": "The forecast wind at the boat, and the hours ahead",
+    "category": "Navigation",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
