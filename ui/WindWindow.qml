@@ -309,8 +309,10 @@ Item {
                             Cell { x: hour.u * 7.5; width: hour.u * 1.5; text: "↓"; rotation: hour.h.dirDeg; horizontalAlignment: Text.AlignHCenter }
                             Cell { x: hour.u * 9.5; width: hour.u * 3.5; text: Wind.compass(hour.h.dirDeg) }
                             Cell { x: hour.u * 13; width: hour.u * 5; horizontalAlignment: Text.AlignRight; text: Wind.knots(hour.h.speedKn) + " kn"; font.bold: true }
-                            Cell { x: hour.u * 18.5; width: hour.u * 4; horizontalAlignment: Text.AlignRight; text: typeof hour.h.gustKn === "number" ? "G" + Wind.knots(hour.h.gustKn) : ""; opacity: 0.65 }
-                            Cell { anchors.right: parent.right; horizontalAlignment: Text.AlignRight; text: typeof hour.h.pressureHpa === "number" ? hour.h.pressureHpa.toFixed(0) + " hPa" : ""; opacity: 0.65 }
+                            // A narrow row or a large font drops pressure,
+                            // then the gust, rather than overlap them.
+                            Cell { x: hour.u * 18.5; width: hour.u * 4; visible: hour.width >= hour.u * 23; horizontalAlignment: Text.AlignRight; text: typeof hour.h.gustKn === "number" ? "G" + Wind.knots(hour.h.gustKn) : ""; opacity: 0.65 }
+                            Cell { anchors.right: parent.right; visible: hour.width >= hour.u * 31; horizontalAlignment: Text.AlignRight; text: typeof hour.h.pressureHpa === "number" ? hour.h.pressureHpa.toFixed(0) + " hPa" : ""; opacity: 0.65 }
                         }
                     }
 

@@ -32,9 +32,20 @@ QtObject {
     readonly property var forecast: state ? state.forecast : null
     readonly property var fetch: state && state.fetch ? state.fetch : null
     readonly property var here: state ? state.here : null
-    readonly property var outlook: state && Array.isArray(state.outlook) ? state.outlook : []
+    // The hours that can be shown: a string time, a finite wind in range,
+    // and gust and pressure only when they're numbers. A broken engine
+    // can't break a row.
+    readonly property var outlook: {
+        if (!state || !Array.isArray(state.outlook)) return [];
+        function num(v, lo, hi) { return typeof v === "number" && isFinite(v) && v >= lo && v <= hi; }
+        return state.outlook.filter(h => h !== null && typeof h === "object" && typeof h.time === "string"
+            && num(h.speedKn, 0, 250) && num(h.dirDeg, 0, 360)
+            && (h.gustKn === undefined || num(h.gustKn, 0, 300))
+            && (h.pressureHpa === undefined || num(h.pressureHpa, 800, 1100)));
+    }
     readonly property var problems: state && Array.isArray(state.problems) ? state.problems : []
-    readonly property bool hasWind: !!here && typeof here.speedKn === "number" && typeof here.dirDeg === "number"
+    readonly property bool hasWind: !!here && typeof here.speedKn === "number" && isFinite(here.speedKn)
+        && typeof here.dirDeg === "number" && isFinite(here.dirDeg)
     // Sustained wind at small-craft advisory strength.
     readonly property bool strong: hasWind && here.speedKn >= 21
     // A forecast that should have been replaced by now, or has run out.
