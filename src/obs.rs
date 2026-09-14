@@ -78,31 +78,42 @@ pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
             .position(|&h| h == name)
             .ok_or_else(|| format!("latest_obs.txt: no {name} column"))?;
     }
-    let mut newest: HashMap<String, Station> = HashMap::new();
+    let width = cols.iter().max().map_or(0, |&c| c + 1);
+    let mut newest: HashMap<String, Report> = HashMap::new();
     let mut read = 0;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        let Some(report) = row(&fields, &cols) else {
+        if fields.len() < width {
+            continue;
+        }
+        let Some(r) = report(&fields, &cols) else {
             continue;
         };
         read += 1;
-        if let Some(s) = report
-            && newest.get(&s.id).is_none_or(|old| old.time < s.time)
-        {
-            newest.insert(s.id.clone(), s);
+        // The newest report counts, wind or not: an older one's wind is
+        // out of date.
+        if newest.get(&r.id).is_none_or(|old| old.time < r.time) {
+            newest.insert(r.id.clone(), r);
         }
     }
     if read == 0 {
         return Err("latest_obs.txt: no reports in it".into());
     }
-    let mut stations: Vec<Station> = newest.into_values().collect();
+    let mut stations: Vec<Station> = newest.into_values().filter_map(|r| r.wind).collect();
     stations.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(stations)
 }
 
-/// None for a row that doesn't read; Some(None) for a station's report
-/// without a wind to draw.
-fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Option<Station>> {
+/// A row that reads: a station's report, with a wind to draw or not.
+struct Report {
+    id: String,
+    time: i64,
+    wind: Option<Station>,
+}
+
+/// None for a row that doesn't read: each value must be a number or NDBC's
+/// missing value, `MM`. The row has been checked to be wide enough.
+fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
     let [
         stn,
         lat,
@@ -116,45 +127,44 @@ fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Option<Station>> {
         wspd,
         gst,
     ] = *cols;
-    let get = |i: usize| f.get(i).copied();
-    // NDBC's missing value is "MM", which doesn't parse.
-    let num = |i: usize| get(i)?.parse::<f64>().ok().filter(|v| v.is_finite());
-    let id = get(stn)?;
+    // Some(None) for `MM`; None for anything else that isn't a number.
+    let value = |i: usize| match f[i] {
+        "MM" => Some(None),
+        t => t.parse::<f64>().ok().filter(|v| v.is_finite()).map(Some),
+    };
+    let id = f[stn];
     if id.len() > 12 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
         return None;
     }
-    let (lat, lon) = (num(lat)?, num(lon)?);
+    let (lat, lon) = (value(lat)??, value(lon)??);
     if !((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon)) {
         return None;
     }
     let time = time::parse_iso(&format!(
         "{}-{}-{}T{}:{}Z",
-        get(year)?,
-        get(month)?,
-        get(day)?,
-        get(hour)?,
-        get(minute)?
+        f[year], f[month], f[day], f[hour], f[minute]
     ))?;
-    let Some(speed) = num(wspd).filter(|v| (0.0..=100.0).contains(v)) else {
-        return Some(None);
-    };
-    let from_deg = num(wdir)
+    let (wspd, wdir, gst) = (value(wspd)?, value(wdir)?, value(gst)?);
+    let id = id.to_ascii_uppercase();
+    // No speed, or a speed without a direction: no barb to draw.
+    let speed = wspd.filter(|v| (0.0..=100.0).contains(v));
+    let from_deg = wdir
         .filter(|v| (0.0..=360.0).contains(v))
         .map(|v| v % 360.0);
-    if from_deg.is_none() && speed > 0.0 {
-        return Some(None);
-    }
-    let gust = num(gst).filter(|v| (0.0..=150.0).contains(v));
-    Some(Some(Station {
-        id: id.to_ascii_uppercase(),
-        name: None,
-        lat,
-        lon,
-        time,
-        speed_kn: speed * KNOTS,
-        from_deg,
-        gust_kn: gust.map(|g| g * KNOTS),
-    }))
+    let wind = match speed {
+        Some(s) if from_deg.is_some() || s == 0.0 => Some(Station {
+            id: id.clone(),
+            name: None,
+            lat,
+            lon,
+            time,
+            speed_kn: s * KNOTS,
+            from_deg,
+            gust_kn: gst.filter(|v| (0.0..=150.0).contains(v)).map(|g| g * KNOTS),
+        }),
+        _ => None,
+    };
+    Some(Report { id, time, wind })
 }
 
 /// NDBC's names by id, trimmed for a chart: `9414750 - Alameda, CA` is
@@ -330,6 +340,9 @@ SHORT 37.000 -122.000 2026 09 14
         for body in [
             "",
             "AAMC1 37.772 -122.300 2026 09\n",
+            "AAMC1 37.772 -122.300 2026 09 14 17 00\n",
+            "AAMC1 37.772 -122.300 2026 09 14 17 00 120 fast MM\n",
+            "AAMC1 MM -122.300 2026 09 14 17 00 120 1.5 MM\n",
             "<html>\nnot a report\n</html>\n",
         ] {
             let e = parse_latest(&format!("{HEADER}{body}")).unwrap_err();
@@ -349,8 +362,13 @@ SHORT 37.000 -122.000 2026 09 14
 AAMC1 37.772 -122.300 2026 09 14 16 00 100 1.0 MM
 aamc1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM
 AAMC1 37.772 -122.300 2026 09 14 15 00 140 2.0 MM
+RCMC1 37.923 -122.410 2026 09 14 16 00 120 1.5 MM
+RCMC1 37.923 -122.410 2026 09 14 17 00  MM  MM MM
+PXOC1 37.798 -122.393 2026 09 14 16 00 110 3.1 MM
+PXOC1 37.798 -122.393 2026 09 14 17 00  MM 3.1 MM
 ",
         );
+        // A newer report without a wind to draw hides an older one's.
         assert_eq!(ids(&s), ["AAMC1"]);
         assert_eq!(s[0].from_deg, Some(120.0));
     }
