@@ -383,8 +383,14 @@ impl Wind {
         out.insert("run".into(), json!(time::iso(f.run)));
         match f.sample(lat, lon, t) {
             Some(s) => sample_into(&mut out, &s),
+            // Off the grid, or a gap in the model's data.
             None => {
-                out.insert("note".into(), json!("outside the forecast area"));
+                let why = if self.settings.region.contains(lat, lon) {
+                    "no forecast for this spot"
+                } else {
+                    "outside the forecast area"
+                };
+                out.insert("note".into(), json!(why));
             }
         }
         Ok(Value::Object(out))

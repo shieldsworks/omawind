@@ -160,7 +160,9 @@ bilinear between grid points, linear between hours.
 - `lat` and `lon` are degrees, west negative. `time` and `id` are as for
   `field`; the time must fall within the forecast.
 - The answer has `speedKn`, `dirDeg`, `gustKn` and `pressureHpa` as `here`
-  does. Off the forecast's grid they're left out and `note` says why.
+  does. Without a forecast for the spot they're left out and `note` says
+  why: `outside the forecast area`, or `no forecast for this spot` where
+  the model has a gap.
 
 ```json
 {"type":"point","v":1,"id":"p1","lat":37.8123,"lon":-122.4012,"time":"2026-09-14T05:00:00Z",
