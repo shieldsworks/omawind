@@ -1,7 +1,7 @@
 //! The engine end to end: a cached run in, an app's view out, the boat's
 //! position from a stand-in omakeel. The clock is pinned inside the run.
 
-use omawind::{config::Region, engine, fetch, time};
+use omawind::{config::Region, engine, fetch, obs, time};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use tokio::{
@@ -42,6 +42,7 @@ fn config(dir: &Path, clock: fn() -> i64) -> engine::Config {
         cache: dir.join("cache"),
         settings: dir.join("config.toml"),
         fetch: false,
+        stations: None,
         clock,
     }
 }
@@ -128,6 +129,11 @@ async fn an_app_sees_the_wind_at_home_then_at_the_boat() {
         .collect();
     assert_eq!(times, ["2026-09-14T04:00:00Z", "2026-09-14T05:00:00Z"]);
     assert!(state.get("problems").is_none());
+    // Stations follow the state; this engine was told not to ask.
+    let stations = app.next().await;
+    assert_eq!(stations["type"], "stations");
+    assert_eq!(stations["status"], "off");
+    assert_eq!(stations["stations"], json!([]));
 
     // omakeel comes up with the boat on HRRR's point 3000, where pyproj
     // and eccodes put the wind at 4.769293 m/s from 285.78° true.
@@ -235,6 +241,89 @@ async fn a_forecast_that_has_run_out_says_so() {
     assert!(state["here"]["note"].as_str().unwrap().contains("run out"));
     assert_eq!(state["outlook"].as_array().unwrap().len(), 0);
     assert_eq!(state["problems"][0], "config.toml: unknown setting bogus");
+    wind.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Real reports from NDBC, 2026-09-14 about 17:40 UTC: the Bay region's
+/// rows, a Boston buoy and a Hawaiian one.
+const NDBC: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ndbc");
+
+fn half_past_five() -> i64 {
+    time::unix(2026, 9, 14, 17, 30, 0)
+}
+
+fn ndbc(latest: &str) -> obs::Source {
+    obs::Source {
+        latest: format!("file://{NDBC}/{latest}"),
+        names: format!("file://{NDBC}/station_table.txt"),
+    }
+}
+
+/// The first `stations` once NDBC has answered.
+async fn answered(app: &mut App) -> Value {
+    loop {
+        let s = app.next_of("stations").await;
+        if s["status"] != "waiting" {
+            return s;
+        }
+    }
+}
+
+#[tokio::test]
+async fn an_app_sees_the_wind_the_stations_measured() {
+    let dir = scratch("stations");
+    let mut c = config(&dir, half_past_five);
+    c.stations = Some(ndbc("latest_obs.txt"));
+    let wind = tokio::spawn(engine::run(c));
+    let mut app = App::connect(&dir.join("wind.sock")).await;
+    let s = answered(&mut app).await;
+    assert_eq!(s["status"], "ok");
+    assert_eq!(s["source"], "NDBC");
+    assert_eq!(s["checked"], "2026-09-14T17:30:00Z");
+    assert!(s.get("message").is_none());
+    let list = s["stations"].as_array().unwrap();
+    let ids: Vec<&str> = list.iter().map(|s| s["id"].as_str().unwrap()).collect();
+    // The region's stations with a wind to draw. Left out: those reporting
+    // no wind (46214, OBXC1, PPXC1, PRYC1, PXSC1, TIBC1), a speed without a
+    // direction (MLSC1), and Boston and Hawaii.
+    assert_eq!(
+        ids,
+        [
+            "46012", "46013", "46026", "AAMC1", "FTPC1", "LNDC1", "MZXC1", "OKXC1", "OMHC1",
+            "PCOC1", "PSBC1", "PXOC1", "RCMC1", "RTYC1", "SFXC1", "UPBC1"
+        ]
+    );
+    // 120° at 1.5 m/s, gusting 2.1.
+    assert_eq!(
+        list[3],
+        json!({"id": "AAMC1", "name": "Alameda", "lat": 37.772, "lon": -122.3,
+               "time": "2026-09-14T17:00:00Z", "speedKn": 2.9, "dirDeg": 120, "gustKn": 4.1})
+    );
+    assert_eq!(list[4]["name"], "San Francisco");
+    // Suisun Bay reports no gust.
+    assert!(list[14].get("gustKn").is_none());
+    assert!(obs::names_file(&dir.join("cache")).exists());
+    wind.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn stations_that_cant_be_read_say_so() {
+    let dir = scratch("nostations");
+    let mut c = config(&dir, half_past_five);
+    c.stations = Some(ndbc("missing.txt"));
+    let wind = tokio::spawn(engine::run(c));
+    let mut app = App::connect(&dir.join("wind.sock")).await;
+    let s = answered(&mut app).await;
+    assert_eq!(s["status"], "error");
+    assert!(
+        s["message"].as_str().unwrap().contains("missing.txt"),
+        "{}",
+        s["message"]
+    );
+    assert_eq!(s["stations"], json!([]));
+    assert!(s.get("checked").is_none());
     wind.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }

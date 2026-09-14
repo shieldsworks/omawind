@@ -1,0 +1,27 @@
+# STATION_ID | OWNER | TTYPE | HULL | NAME | PAYLOAD | LOCATION | TIMEZONE | FORECAST | NOTE
+#
+44013|N|2.1-meter ionomer foam buoy|2.1D13|BOSTON 16 NM East of Boston, MA|SCOOP payload|42.346 N 70.651 W (42&#176;20'44" N 70&#176;39'4" W)|E|FZUS51.KBOX |Caution: Right whales may be active in northeast waters year-round. Mandatory speed restrictions of 10 knots apply to vessels 65 feet or greater in specific areas and times along the US east coast. Voluntary speed restrictions may be in effect in other areas and times. For current information on speed-restricted areas, go to: <a title="http://www.nmfs.noaa.gov/pr/shipstrike" href="http://www.nmfs.noaa.gov/pr/shipstrike">http://www.nmfs.noaa.gov/pr/shipstrike</a> <p>For area forecasts and warnings, select: <a href="http://www.weather.gov/box/">Boston WFO</a></p>
+46012|N|Uncrewed Surface Vehicle||HALF MOON BAY - 24NM SSW of San Francisco, CA|DataXplorer|37.356 N 122.881 W (37&#176;21'20" N 122&#176;52'51" W)|P|FZUS56.KMTR |Previous data provided by Saildrone for this station are available at:<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=1801589">SD-1073 (1801589)</a> -- 0000Z, 9/1/23 to 2359Z, 4/25/24 and 2000Z, 5/8/25 to 0000Z, 8/4/25<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=1801593">SD-1077 (1801593)</a> -- 1200Z, 7/27/24 to 1959Z, 5/8/25<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=1801583">SD-1063 (1801583)</a> -- 0000Z, 4/26/24 to 0330Z, 7/24/24.
+46013|N|3-meter discus buoy w/ seal cage|3D76|BODEGA BAY - 48NM NW of San Francisco, CA|SCOOP payload|38.235 N 123.317 W (38&#176;14'5" N 123&#176;19'1" W)|P|FZUS56.KMTR |
+46026|N|3-meter foam buoy|3DV40|SAN FRANCISCO - 18NM West of San Francisco, CA|SCOOP payload|37.750 N 122.838 W (37&#176;45'0" N 122&#176;50'18" W)|P|FZUS56.KMTR |
+46214|R|Waverider Buoy||Point Reyes, CA (029)||37.944 N 123.466 W (37&#176;56'40" N 123&#176;27'59" W)|P|FZUS56.KMTR |
+51201|PO|Waverider Buoy||Waimea Bay, HI (106)||21.671 N 158.118 W (21&#176;40'15" N 158&#176;7'5" W)|H|FZHW50.PHFO |
+aamc1|O|Water Level Observation Network||9414750 - Alameda, CA||37.772 N 122.300 W (37&#176;46'19" N 122&#176;18'1" W)|P|FZUS56.KMTR |
+ftpc1|O|Water Level Observation Network||9414290 - San Francisco, CA||37.806 N 122.466 W (37&#176;48'23" N 122&#176;27'57" W)|P|FZUS56.KMTR |
+lndc1|PT|Water Level Observation Network||9414763 - Oakland Berth 67, CA||37.795 N 122.281 W (37&#176;47'42" N 122&#176;16'53" W)|P| |
+mlsc1|ML|Coastal Marine Station||Moss Landing, South Harbor, CA||36.802 N 121.791 W (36&#176;48'9" N 121&#176;47'29" W)|P| |
+mzxc1|PT|Water Level Observation Network||9415102 - Martinez-Amorco Pier, CA||38.035 N 122.125 W (38&#176;2'5" N 122&#176;7'31" W)|| |
+obxc1|PT|Water Level Observation Network||9414797 - Oakland Berth 38, CA||37.804 N 122.341 W (37&#176;48'13" N 122&#176;20'29" W)|P| |
+okxc1|PT|Water Level Observation Network||9414776 - Oakland Berth 34, CA||37.811 N 122.333 W (37&#176;48'38" N 122&#176;19'59" W)|P| |
+omhc1|PT|Water Level Observation Network||9414769 - Oakland Middle Harbor Met, CA||37.801 N 122.330 W (37&#176;48'2" N 122&#176;19'47" W)|P| |
+pcoc1|O|Water Level Observation Network||9415144 - Port Chicago, CA||38.056 N 122.039 W (38&#176;3'22" N 122&#176;2'22" W)|P|FZUS56.KMTR |
+ppxc1|PT|Water Level Observation Network||9414847 - Point Potrero, Richmond, CA||37.906 N 122.365 W (37&#176;54'20" N 122&#176;21'54" W)|P| |
+pryc1|O|Water Level Observation Network||9415020 - Point Reyes, CA||37.996 N 122.977 W (37&#176;59'46" N 122&#176;58'36" W)|P|FZUS56.KMTR |
+psbc1|PT|Water Level Observation Network||9415115 - Pittsburg (Suisun Bay), CA||38.040 N 121.887 W (38&#176;2'23" N 121&#176;53'12" W)|P| |
+pxoc1|PT|Water Level Observation Network||9414311 - San Francisco Pier 1, CA||37.798 N 122.393 W (37&#176;47'52" N 122&#176;23'34" W)|P| |
+pxsc1|PT|Water Level Observation Network||9414296 - Pier 17, San Francisco Bay, CA||37.803 N 122.397 W (37&#176;48'11" N 122&#176;23'50" W)|P| |
+rcmc1|PT|Water Level Observation Network||9414863 - Richmond, CA||37.923 N 122.410 W (37&#176;55'23" N 122&#176;24'34" W)|P|FZUS56.KMTR |
+rtyc1|PT|Water Level Observation Network||9414523 - Redwood City, CA||37.507 N 122.212 W (37&#176;30'25" N 122&#176;12'43" W)|P|FZUS56.KMTR |
+sfxc1|NR|NERRS Weather Station||Rush Ranch, San Francisco Bay Reserve, CA||38.200 N 122.026 W (38&#176;12'2" N 122&#176;1'35" W)|P| |Water Quality data for this Reserve are available at....<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=fffc1">FFFC1</a> -- First Mallard<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=ryec1">RYEC1</a>?-- Second Mallard<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=gggc1">GGGC1</a>?-- Gallinas Creek<br /><a href="https://www.ndbc.noaa.gov/station_page.php?station=scqc1">SCQC1</a>?-- China Camp
+tibc1|CN|Coastal Marine Station||Tiburon Pier, San Francisco Bay, CA||37.892 N 122.447 W (37&#176;53'29" N 122&#176;26'48" W)|P| |For area forecasts and warnings, select:<a href="https://www.weather.gov/mtr/">San Francisco/Monterey WFO</a>
+upbc1|PT|Water Level Observation Network||9415118 - Union Pacific Rail Road Bridge, Martinez, CA||38.038 N 122.121 W (38&#176;2'18" N 122&#176;7'15" W)|P| |
