@@ -8,7 +8,9 @@ use crate::fetch;
 use crate::time;
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// Where the reports and the names come from: NDBC, or files in tests.
@@ -61,7 +63,8 @@ pub struct Station {
 /// The stations reporting wind in `latest_obs.txt`, by id. Columns are found
 /// by the header's names. A row without a speed, or with a speed and no
 /// direction, has no barb to draw and is left out, as is a row that doesn't
-/// read.
+/// read. A file with no row that reads is an error, not an empty Bay, so the
+/// last good reports stay.
 pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
     let header = text
         .lines()
@@ -76,20 +79,30 @@ pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
             .ok_or_else(|| format!("latest_obs.txt: no {name} column"))?;
     }
     let mut newest: HashMap<String, Station> = HashMap::new();
+    let mut read = 0;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if let Some(s) = row(&fields, &cols)
+        let Some(report) = row(&fields, &cols) else {
+            continue;
+        };
+        read += 1;
+        if let Some(s) = report
             && newest.get(&s.id).is_none_or(|old| old.time < s.time)
         {
             newest.insert(s.id.clone(), s);
         }
+    }
+    if read == 0 {
+        return Err("latest_obs.txt: no reports in it".into());
     }
     let mut stations: Vec<Station> = newest.into_values().collect();
     stations.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(stations)
 }
 
-fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Station> {
+/// None for a row that doesn't read; Some(None) for a station's report
+/// without a wind to draw.
+fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Option<Station>> {
     let [
         stn,
         lat,
@@ -122,15 +135,17 @@ fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Station> {
         get(hour)?,
         get(minute)?
     ))?;
-    let speed = num(wspd).filter(|v| (0.0..=100.0).contains(v))?;
+    let Some(speed) = num(wspd).filter(|v| (0.0..=100.0).contains(v)) else {
+        return Some(None);
+    };
     let from_deg = num(wdir)
         .filter(|v| (0.0..=360.0).contains(v))
         .map(|v| v % 360.0);
     if from_deg.is_none() && speed > 0.0 {
-        return None;
+        return Some(None);
     }
     let gust = num(gst).filter(|v| (0.0..=150.0).contains(v));
-    Some(Station {
+    Some(Some(Station {
         id: id.to_ascii_uppercase(),
         name: None,
         lat,
@@ -139,7 +154,7 @@ fn row(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Station> {
         speed_kn: speed * KNOTS,
         from_deg,
         gust_kn: gust.map(|g| g * KNOTS),
-    })
+    }))
 }
 
 /// NDBC's names by id, trimmed for a chart: `9414750 - Alameda, CA` is
@@ -157,6 +172,9 @@ pub fn parse_names(text: &str) -> HashMap<String, String> {
 }
 
 fn clean_name(raw: &str) -> Option<String> {
+    // The names come off the network and go to terminals and the chart:
+    // no control characters.
+    let raw: String = raw.chars().filter(|c| !c.is_control()).collect();
     let mut s = raw.trim().replace("&amp;", "&");
     // A tide gauge's number comes first.
     if let Some((number, rest)) = s.split_once(" - ")
@@ -210,18 +228,27 @@ pub fn names(cache: &Path, source: &Source) -> Result<HashMap<String, String>, S
     fetched.or_else(|e| kept().ok_or(e))
 }
 
-/// Written beside and renamed over, so a reader never sees half a file. A
-/// cache that can't be written only costs a fetch.
+/// Written to a file of its own beside it and renamed over, so a reader
+/// never sees half a file, and two writers never share one. A cache that
+/// can't be written only costs a fetch.
 fn save(file: &Path, bytes: &[u8]) {
+    static WRITES: AtomicU64 = AtomicU64::new(0);
     let Some(dir) = file.parent() else { return };
-    let tmp = dir.join(format!(".station_table.{}.tmp", std::process::id()));
+    let tmp = dir.join(format!(
+        ".station_table.{}.{}.tmp",
+        std::process::id(),
+        WRITES.fetch_add(1, Ordering::Relaxed)
+    ));
     if fs::create_dir_all(dir).is_err() {
         return;
     }
-    if fs::write(&tmp, bytes)
-        .and_then(|()| fs::rename(&tmp, file))
-        .is_err()
-    {
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes))
+        .and_then(|()| fs::rename(&tmp, file));
+    if written.is_err() {
         let _ = fs::remove_file(&tmp);
     }
 }
@@ -297,6 +324,25 @@ SHORT 37.000 -122.000 2026 09 14
     }
 
     #[test]
+    fn a_file_with_no_report_that_reads_is_an_error() {
+        // Truncated, or a page that isn't the reports: the last good ones
+        // should stay, so this mustn't read as an empty Bay.
+        for body in [
+            "",
+            "AAMC1 37.772 -122.300 2026 09\n",
+            "<html>\nnot a report\n</html>\n",
+        ] {
+            let e = parse_latest(&format!("{HEADER}{body}")).unwrap_err();
+            assert!(e.contains("no reports"), "{body:?}: {e}");
+        }
+        // A file whose stations all report no wind is still a good file.
+        assert_eq!(
+            parse("46214 37.944 -123.466 2026 09 14 16 56 MM MM MM\n"),
+            []
+        );
+    }
+
+    #[test]
     fn keeps_a_stations_newest_report() {
         let s = parse(
             "\
@@ -352,6 +398,7 @@ AHEAD 37.772 -122.300 2026 09 14 18 00 120 1.5 MM
 aamc1|O|Water Level Observation Network||9414750 - Alameda, CA||37.772 N 122.300 W|P| |
 46026|N|3-meter foam buoy|3DV40|SAN FRANCISCO - 18NM West of San Francisco, CA|SCOOP payload|37.750 N|P| |
 x1|N|||Boats &amp; Buoys||||
+x2|N|||Clear\x1b[2J\x1b[H Screen||||
 blank|N|||   ||||
 short|N
 ",
@@ -359,7 +406,29 @@ short|N
         assert_eq!(n["AAMC1"], "Alameda");
         assert_eq!(n["46026"], "SAN FRANCISCO - 18NM West of San Francisco");
         assert_eq!(n["X1"], "Boats & Buoys");
-        assert_eq!(n.len(), 3);
+        assert_eq!(n["X2"], "Clear[2J[H Screen");
+        assert_eq!(n.len(), 4);
+    }
+
+    #[test]
+    fn writers_at_once_leave_one_whole_table() {
+        let dir = std::env::temp_dir().join(format!("omawind-save-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let file = dir.join("ndbc").join("station_table.txt");
+        let tables: Vec<String> = (0..8)
+            .map(|i| format!("id{i}|N|||Station {i}||\n").repeat(20_000))
+            .collect();
+        std::thread::scope(|s| {
+            for t in &tables {
+                let file = &file;
+                s.spawn(move || save(file, t.as_bytes()));
+            }
+        });
+        let kept = fs::read_to_string(&file).unwrap();
+        assert!(tables.contains(&kept), "a mixed or partial table");
+        let left: Vec<_> = fs::read_dir(file.parent().unwrap()).unwrap().collect();
+        assert_eq!(left.len(), 1, "temporary files left behind");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
