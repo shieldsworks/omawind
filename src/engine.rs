@@ -293,6 +293,7 @@ impl Wind {
         let id = message.get("id").cloned();
         let reply = match message.get("type").and_then(Value::as_str) {
             Some("field") => self.field(message, now),
+            Some("point") => self.point(message, now),
             Some(other) => Err(format!("unknown type {other}")),
             None => Err("missing type".into()),
         };
@@ -320,13 +321,7 @@ impl Wind {
         if !(area.south < area.north && area.west < area.east) {
             return Err("field: south must be below north and west below east".into());
         }
-        let t = match m.get("time") {
-            None => now,
-            Some(Value::String(s)) => {
-                time::parse_iso(s).ok_or("field: time must be like 2026-09-14T03:00:00Z")?
-            }
-            Some(_) => return Err("field: time must be a string".into()),
-        };
+        let t = asked_time(m, now, "field")?;
         let max = match m.get("max") {
             None => 400,
             Some(v) => v
@@ -358,6 +353,57 @@ impl Wind {
             json!({"type": "field", "v": VERSION, "time": time::iso(t), "run": time::iso(f.run),
                   "step": step, "points": points}),
         )
+    }
+
+    /// The forecast at one position, as `here` is worked out.
+    fn point(&self, m: &Value, now: i64) -> Result<Value, String> {
+        let number = |k: &str, limit: f64| {
+            m.get(k)
+                .and_then(Value::as_f64)
+                .filter(|v| v.is_finite() && v.abs() <= limit)
+                .ok_or_else(|| format!("point: {k} must be a number, ±{limit}"))
+        };
+        let (lat, lon) = (number("lat", 90.0)?, number("lon", 180.0)?);
+        let t = asked_time(m, now, "point")?;
+        let f = self.forecast.as_ref().ok_or("point: no forecast yet")?;
+        if t < f.first() || t > f.last() {
+            return Err(format!(
+                "point: {} is outside the forecast, {} to {}",
+                time::iso(t),
+                time::iso(f.first()),
+                time::iso(f.last())
+            ));
+        }
+        let mut out = Map::new();
+        out.insert("type".into(), json!("point"));
+        out.insert("v".into(), json!(VERSION));
+        out.insert("lat".into(), json!(round(lat, 5)));
+        out.insert("lon".into(), json!(round(lon, 5)));
+        out.insert("time".into(), json!(time::iso(t)));
+        out.insert("run".into(), json!(time::iso(f.run)));
+        match f.sample(lat, lon, t) {
+            Some(s) => sample_into(&mut out, &s),
+            // Off the grid, or a gap in the model's data.
+            None => {
+                let why = if self.settings.region.contains(lat, lon) {
+                    "no forecast for this spot"
+                } else {
+                    "outside the forecast area"
+                };
+                out.insert("note".into(), json!(why));
+            }
+        }
+        Ok(Value::Object(out))
+    }
+}
+
+/// A request's `time`, or now without one.
+fn asked_time(m: &Value, now: i64, kind: &str) -> Result<i64, String> {
+    match m.get("time") {
+        None => Ok(now),
+        Some(Value::String(s)) => time::parse_iso(s)
+            .ok_or_else(|| format!("{kind}: time must be like 2026-09-14T03:00:00Z")),
+        Some(_) => Err(format!("{kind}: time must be a string")),
     }
 }
 

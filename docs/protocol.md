@@ -150,6 +150,25 @@ replace their copy.
  "points":[{"lat":37.6012,"lon":-122.5981,"speedKn":14.2,"dirDeg":281,"gustKn":19.9,"pressureHpa":1014.4}]}
 ```
 
+`point` asks for the forecast at one position, worked out as `here` is:
+bilinear between grid points, linear between hours.
+
+```json
+{"type":"point","id":"p1","lat":37.8123,"lon":-122.4012,"time":"2026-09-14T05:00:00Z"}
+```
+
+- `lat` and `lon` are degrees, west negative. `time` and `id` are as for
+  `field`; the time must fall within the forecast.
+- The answer has `speedKn`, `dirDeg`, `gustKn` and `pressureHpa` as `here`
+  does. Without a forecast for the spot they're left out and `note` says
+  why: `outside the forecast area`, or `no forecast for this spot` where
+  the model has a gap.
+
+```json
+{"type":"point","v":1,"id":"p1","lat":37.8123,"lon":-122.4012,"time":"2026-09-14T05:00:00Z",
+ "run":"2026-09-14T03:00:00Z","speedKn":13.1,"dirDeg":262,"gustKn":18.4,"pressureHpa":1014.5}
+```
+
 `error` answers a bad request, with the request's `id` when it had one.
 
 ```json
