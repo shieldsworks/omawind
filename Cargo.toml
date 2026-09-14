@@ -1,0 +1,18 @@
+[package]
+name = "omawind"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+description = "Wind forecasts for Omahoy: NOAA's HRRR, decoded from GRIB from scratch"
+license = "MIT"
+repository = "https://github.com/shieldsworks/omawind"
+homepage = "https://omahoy.org"
+
+[dependencies]
+serde_json = "1"
+# flock for the socket's lock file, as omakeel and omahelm do.
+libc = "0.2"
+tokio = { version = "1.53", features = ["rt", "net", "time", "sync", "io-util", "macros", "signal"] }
+
+[profile.release]
+debug = "line-tables-only"
