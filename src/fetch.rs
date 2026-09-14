@@ -140,7 +140,7 @@ pub fn filter_url(run: &Run, hour: u32, r: &Region) -> String {
 /// curl is stopped after `DEADLINE` whatever it's doing. Both of its pipes
 /// are read at once, so it never waits on one while omawind waits on the
 /// other.
-fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+pub(crate) fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     let mut child = Command::new("curl")
         .args([
             "--http1.1",

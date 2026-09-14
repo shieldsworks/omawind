@@ -6,9 +6,11 @@ use crate::config::{self, Region, Settings};
 use crate::fetch;
 use crate::forecast::{Forecast, Sample};
 use crate::keel::{self, Boat, Update};
+use crate::obs::{self, Station};
 use crate::time;
 use serde_json::{Map, Value, json};
 use std::{
+    collections::HashMap,
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io,
@@ -18,7 +20,7 @@ use std::{
     },
     path::{Path, PathBuf},
     sync::{Arc, mpsc as std_mpsc},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -37,6 +39,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_LINE: usize = 64 * 1024;
 /// How often NOMADS is asked for a newer run.
 const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// NDBC updates its latest reports about every 10 minutes too.
+const STATIONS_EVERY: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+/// How often the station names are looked at again; they're fetched weekly.
+const NAMES_EVERY: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
 /// A forecast from a run this old means newer runs couldn't be fetched.
 const OLD_AFTER: i64 = 4 * time::HOUR;
 /// The most points a `field` answer may carry.
@@ -51,6 +57,8 @@ pub struct Config {
     pub settings: PathBuf,
     /// Whether to download forecasts, or only use what's cached.
     pub fetch: bool,
+    /// Where to read measured wind. None to never ask.
+    pub stations: Option<obs::Source>,
     /// Unix seconds now. Tests pin it.
     pub clock: fn() -> i64,
 }
@@ -68,6 +76,7 @@ enum Event {
     Checking,
     Downloading { done: usize, total: usize },
     Fetched(Result<(PathBuf, usize), String>),
+    Stations(Result<Vec<Station>, String>),
     Request { client: u64, message: Value },
 }
 
@@ -87,6 +96,9 @@ struct Wind {
     run_dir: Option<PathBuf>,
     load_problem: Option<String>,
     fetch: FetchState,
+    /// Every station's latest report, whatever the region.
+    stations: Vec<Station>,
+    stations_fetch: FetchState,
     boat: Option<Boat>,
     keel: &'static str,
 }
@@ -239,6 +251,44 @@ impl Wind {
         state.to_string()
     }
 
+    /// The region's recent reports from NDBC's stations.
+    fn stations(&self, now: i64) -> String {
+        let list: Vec<Value> = obs::current(&self.stations, self.settings.region, now)
+            .map(|s| {
+                let mut m = Map::new();
+                m.insert("id".into(), json!(s.id));
+                if let Some(name) = &s.name {
+                    m.insert("name".into(), json!(name));
+                }
+                m.insert("lat".into(), json!(round(s.lat, 4)));
+                m.insert("lon".into(), json!(round(s.lon, 4)));
+                m.insert("time".into(), json!(time::iso(s.time)));
+                m.insert("speedKn".into(), json!(round(s.speed_kn, 1)));
+                if let Some(d) = s.from_deg {
+                    m.insert("dirDeg".into(), json!((d.round() as i64).rem_euclid(360)));
+                }
+                if let Some(g) = s.gust_kn {
+                    m.insert("gustKn".into(), json!(round(g, 1)));
+                }
+                Value::Object(m)
+            })
+            .collect();
+        let f = &self.stations_fetch;
+        let mut out = json!({
+            "type": "stations", "v": VERSION,
+            "source": "NDBC",
+            "status": f.status,
+            "stations": list,
+        });
+        if let Some(t) = f.checked {
+            out["checked"] = json!(time::iso(t));
+        }
+        if let Some(m) = &f.message {
+            out["message"] = json!(m);
+        }
+        out.to_string()
+    }
+
     fn answer(&self, message: &Value, now: i64) -> Value {
         let id = message.get("id").cloned();
         let reply = match message.get("type").and_then(Value::as_str) {
@@ -361,6 +411,17 @@ pub async fn run(config: Config) -> io::Result<()> {
             message: None,
             checked: None,
         },
+        stations: Vec::new(),
+        stations_fetch: FetchState {
+            status: if config.stations.is_some() {
+                "waiting"
+            } else {
+                "off"
+            },
+            progress: None,
+            message: None,
+            checked: None,
+        },
         boat: None,
         keel: if config.keel.is_some() { "lost" } else { "off" },
         config,
@@ -377,10 +438,17 @@ pub async fn run(config: Config) -> io::Result<()> {
             wind.config.clock,
         )
     });
+    // The thread stops once this is dropped, when the engine ends.
+    let _stations = wind
+        .config
+        .stations
+        .clone()
+        .map(|source| spawn_stations(wind.config.cache.clone(), source, tx.clone()));
 
     let mut clients: Vec<Client> = Vec::new();
     let mut next_id: u64 = 1;
     let mut last_state: Arc<str> = Arc::from("");
+    let mut last_stations: Arc<str> = Arc::from("");
     let mut tick = interval(Duration::from_secs(1));
     tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut ticks: u64 = 0;
@@ -414,6 +482,17 @@ pub async fn run(config: Config) -> io::Result<()> {
                     wind.fetch.message = Some(e);
                     // The hours that did arrive may have made a run ready.
                     wind.load_newest();
+                }
+                Event::Stations(Ok(stations)) => {
+                    wind.stations = stations;
+                    wind.stations_fetch.status = "ok";
+                    wind.stations_fetch.message = None;
+                    wind.stations_fetch.checked = Some(now);
+                }
+                // The last reports stay until they're too old to show.
+                Event::Stations(Err(e)) => {
+                    wind.stations_fetch.status = "error";
+                    wind.stations_fetch.message = Some(e);
                 }
                 Event::Request { client, message } => {
                     let reply = encode(&wind.answer(&message, now).to_string());
@@ -466,14 +545,55 @@ pub async fn run(config: Config) -> io::Result<()> {
         let state = encode(&wind.state(now));
         let changed = state != last_state;
         last_state = state;
+        let stations = encode(&wind.stations(now));
+        let stations_changed = stations != last_stations;
+        last_stations = stations;
         clients.retain_mut(|client| {
             if client.tx.is_closed() {
                 return false;
             }
             let fresh = std::mem::take(&mut client.fresh);
-            !(changed || fresh) || client.tx.try_send(last_state.clone()).is_ok()
+            (!(changed || fresh) || client.tx.try_send(last_state.clone()).is_ok())
+                && (!(stations_changed || fresh)
+                    || client.tx.try_send(last_stations.clone()).is_ok())
         });
     }
+}
+
+/// Reads NDBC's latest reports on a thread of its own, since curl blocks: at
+/// once, then every 10 minutes. Stops when the returned sender is dropped.
+fn spawn_stations(
+    cache: PathBuf,
+    source: obs::Source,
+    tx: mpsc::Sender<Event>,
+) -> std_mpsc::Sender<()> {
+    let (alive, rx) = std_mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let mut names = HashMap::new();
+        let mut named: Option<Instant> = None;
+        loop {
+            // Without names the stations still go out, by id.
+            if named.is_none_or(|t| t.elapsed() >= NAMES_EVERY) {
+                match obs::names(&cache, &source) {
+                    Ok(n) => {
+                        names = n;
+                        named = Some(Instant::now());
+                    }
+                    Err(e) => eprintln!("omawind: station names: {e}"),
+                }
+            }
+            if tx
+                .blocking_send(Event::Stations(obs::latest(&source, &names)))
+                .is_err()
+            {
+                return;
+            }
+            if let Err(std_mpsc::RecvTimeoutError::Disconnected) = rx.recv_timeout(STATIONS_EVERY) {
+                return;
+            }
+        }
+    });
+    alive
 }
 
 /// Checks NOMADS on a thread of its own, since curl blocks: at once, then
@@ -539,7 +659,7 @@ fn spawn_fetcher(
 struct Client {
     id: u64,
     tx: mpsc::Sender<Arc<str>>,
-    /// Hasn't been sent the current state yet.
+    /// Hasn't been sent the current state and stations yet.
     fresh: bool,
     task: JoinHandle<()>,
 }

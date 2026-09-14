@@ -15,8 +15,8 @@ widget and omahelm's wind layer are clients.
   `v` shows an error and stops using the data.
 - Key order is not significant. Keys that don't apply are left out, never
   sent as `null`. Clients ignore message types and keys they don't know.
-- Any number of clients may connect. `state` goes to every client; `field`
-  and `error` go only to the client that asked.
+- Any number of clients may connect. `state` and `stations` go to every
+  client; `field` and `error` go only to the client that asked.
 - A client that can't take a message within 2 seconds, or falls 64 messages
   behind, is disconnected. It can reconnect.
 - A line longer than 64 KiB from a client, or one that isn't a JSON object,
@@ -24,7 +24,7 @@ widget and omahelm's wind layer are clients.
 
 ## Engine messages
 
-`hello` is sent once on connect, followed by `state`.
+`hello` is sent once on connect, followed by `state` and `stations`.
 
 ```json
 {"type":"hello","v":1,"wind":"0.1.0"}
@@ -100,6 +100,32 @@ home from the settings.
 
 The forecast at `here`, one entry per hour, from the hour under way to the
 run's last. Empty without a forecast for the place.
+
+`stations` is the wind measured at weather stations in the region: NOAA's
+buoys, and the piers and tide gauges of its PORTS program around harbors. It
+is sent on connect after `state`, and again whenever it changes. Clients
+replace their copy.
+
+```json
+{"type":"stations","v":1,"source":"NDBC","status":"ok","checked":"2026-09-14T17:50:00Z",
+ "stations":[{"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,
+              "time":"2026-09-14T17:00:00Z","speedKn":2.9,"dirDeg":120,"gustKn":4.1}]}
+```
+
+- `source` is `NDBC`, NOAA's National Data Buoy Center. The engine reads its
+  latest reports every 10 minutes, about as often as NDBC updates them.
+- `status` is `off` (started with `--offline`), `waiting` (no answer yet),
+  `ok`, or `error` with `message`. After an error the last reports stay
+  until they're too old to show.
+- `checked` is when NDBC last answered.
+- Each station: `id` is NDBC's, and `name` is sent when NDBC's table has
+  one. `time` is when the report was taken; a report over 2 hours old is left
+  out. `speedKn` is the wind averaged over 2 minutes ashore or 8 on a buoy,
+  knots, and `dirDeg` where it blows from, degrees true, 0 to 359, left out
+  only in a calm. `gustKn` is the gust, when reported. Stations that report no
+  wind, or a speed without a direction, aren't listed.
+- A station's anemometer may not be 10 m up, and a pier's may be sheltered:
+  its wind is what it measured, not what `field` would say there.
 
 ## Requests
 

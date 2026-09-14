@@ -1,21 +1,24 @@
-use omawind::{config, engine, fetch, forecast::Forecast, grib, keel, time};
-use std::{env, path::PathBuf, process::ExitCode};
+use omawind::{config, engine, fetch, forecast::Forecast, grib, keel, obs, time};
+use std::{collections::HashMap, env, path::PathBuf, process::ExitCode};
 use tokio::signal::unix::{SignalKind, signal};
 
 const USAGE: &str = "\
 usage: omawind run [--offline] [--socket PATH] [--keel PATH]
        omawind fetch
        omawind at [LAT,LON]
+       omawind stations
        omawind decode FILE
        omawind --version
 
-run     serve the forecast and the wind at the boat to Omahoy apps, fetching
-        a newer HRRR run from NOAA every 10 minutes. --offline uses only
-        what's cached. The socket defaults to $XDG_RUNTIME_DIR/omawind/wind.sock
-        and omakeel's to $XDG_RUNTIME_DIR/omakeel/keel.sock.
-fetch   download the newest HRRR run for the region now.
-at      print the cached forecast at a position, or at home.
-decode  list the fields in a GRIB2 file.
+run       serve the forecast, the wind at the boat and the stations' measured
+          wind to Omahoy apps, fetching a newer HRRR run and NDBC's latest
+          reports from NOAA every 10 minutes. --offline uses only what's
+          cached. The socket defaults to $XDG_RUNTIME_DIR/omawind/wind.sock
+          and omakeel's to $XDG_RUNTIME_DIR/omakeel/keel.sock.
+fetch     download the newest HRRR run for the region now.
+at        print the cached forecast at a position, or at home.
+stations  print the wind the region's stations measured, from NDBC.
+decode    list the fields in a GRIB2 file.
 
 Settings: ~/.config/omawind/config.toml (region, home).";
 
@@ -39,6 +42,7 @@ fn run(args: &[String]) -> Result<(), String> {
         "run" => serve(rest),
         "fetch" if rest.is_empty() => fetch_now(),
         "at" if rest.len() <= 1 => at(rest.first().map(String::as_str)),
+        "stations" if rest.is_empty() => stations(),
         "decode" if rest.len() == 1 => decode(&rest[0]),
         "--version" | "version" => {
             println!("omawind {}", env!("CARGO_PKG_VERSION"));
@@ -80,6 +84,7 @@ fn serve(args: &[String]) -> Result<(), String> {
         cache: config::cache_dir(),
         settings: config::config_path(),
         fetch: !offline,
+        stations: (!offline).then(obs::Source::ndbc),
         clock: time::now,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -170,6 +175,38 @@ fn at(position: Option<&str>) -> Result<(), String> {
     }
     if !any {
         return Err("that position is outside the forecast area".into());
+    }
+    Ok(())
+}
+
+fn stations() -> Result<(), String> {
+    let s = settings()?;
+    let source = obs::Source::ndbc();
+    let names = obs::names(&config::cache_dir(), &source).unwrap_or_else(|e| {
+        eprintln!("omawind: station names: {e}");
+        HashMap::new()
+    });
+    let all = obs::latest(&source, &names)?;
+    let shown: Vec<&obs::Station> = obs::current(&all, s.region, time::now()).collect();
+    if shown.is_empty() {
+        return Err("no station in the region has reported wind in the last 2 hours".into());
+    }
+    println!(
+        "{:<7} {:<26} {:>5} {:>5} {:>6} {:>6}",
+        "NDBC", "", "UTC", "from", "kn", "gust"
+    );
+    for st in shown {
+        let name: String = st.name.as_deref().unwrap_or("").chars().take(26).collect();
+        let opt = |v: Option<f64>, f: &dyn Fn(f64) -> String| v.map_or("-".into(), f);
+        println!(
+            "{:<7} {:<26} {:>5} {:>5} {:>6.1} {:>6}",
+            st.id,
+            name,
+            &time::iso(st.time)[11..16],
+            opt(st.from_deg, &|d| format!("{}°", d.round() as i64 % 360)),
+            st.speed_kn,
+            opt(st.gust_kn, &|g| format!("{g:.1}"))
+        );
     }
     Ok(())
 }
