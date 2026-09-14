@@ -32,13 +32,29 @@ QtObject {
     readonly property var forecast: state ? state.forecast : null
     readonly property var fetch: state && state.fetch ? state.fetch : null
     readonly property var here: state ? state.here : null
-    readonly property var outlook: state && Array.isArray(state.outlook) ? state.outlook : []
+    // The hours that can be shown: a string time, a finite wind in range,
+    // and gust and pressure only when they're numbers. A broken engine
+    // can't break a row.
+    readonly property var outlook: {
+        if (!state || !Array.isArray(state.outlook)) return [];
+        function num(v, lo, hi) { return typeof v === "number" && isFinite(v) && v >= lo && v <= hi; }
+        return state.outlook.filter(h => h !== null && typeof h === "object" && typeof h.time === "string"
+            && num(h.speedKn, 0, 250) && num(h.dirDeg, 0, 360)
+            && (h.gustKn === undefined || num(h.gustKn, 0, 300))
+            && (h.pressureHpa === undefined || num(h.pressureHpa, 800, 1100)));
+    }
     readonly property var problems: state && Array.isArray(state.problems) ? state.problems : []
-    readonly property bool hasWind: !!here && typeof here.speedKn === "number" && typeof here.dirDeg === "number"
+    readonly property bool hasWind: !!here && typeof here.speedKn === "number" && isFinite(here.speedKn)
+        && typeof here.dirDeg === "number" && isFinite(here.dirDeg)
     // Sustained wind at small-craft advisory strength.
     readonly property bool strong: hasWind && here.speedKn >= 21
     // A forecast that should have been replaced by now, or has run out.
     readonly property bool dated: !!forecast && (forecast.status === "old" || forecast.status === "expired")
+
+    // The latest `stations`, as far as it can be shown; null while
+    // disconnected, and from an engine too old to send it.
+    property var stations: null
+    readonly property var measured: stations ? stations.stations : []
 
     function receive(line) {
         let m;
@@ -50,16 +66,50 @@ QtObject {
         // Only a well-formed message counts. Anything else, even a bare {},
         // is ignored rather than taken as another protocol version.
         if (m === null || typeof m !== "object" || typeof m.v !== "number") return;
+        // Lines already buffered after another version's are dropped too.
+        if (wind.incompatible) return;
         if (m.v !== wind.version) {
             wind.incompatible = true;
             wind.state = null;
+            wind.stations = null;
             wind.socket.connected = false;
             return;
         }
         if (m.type === "state" && m.forecast !== null && typeof m.forecast === "object"
                 && m.here !== null && typeof m.here === "object")
             wind.state = m;
+        else if (m.type === "stations" && Array.isArray(m.stations))
+            wind.stations = wind.showable(m);
         // Other types are ignored, as the protocol asks.
+    }
+
+    // The stations that can be shown, so a broken engine can't break the
+    // window: finite numbers in range, a direction left out only in a calm,
+    // and text where text is read.
+    function showable(m) {
+        function num(v, lo, hi) { return typeof v === "number" && isFinite(v) && v >= lo && v <= hi; }
+        const kept = m.stations.filter(s => s !== null && typeof s === "object"
+            && typeof s.id === "string" && typeof s.time === "string"
+            && (s.name === undefined || typeof s.name === "string")
+            && num(s.lat, -90, 90) && num(s.lon, -180, 180) && num(s.speedKn, 0, 250)
+            && (s.dirDeg === undefined ? s.speedKn === 0 : num(s.dirDeg, 0, 360))
+            && (s.gustKn === undefined || num(s.gustKn, 0, 300)));
+        return Object.assign({}, m, {stations: kept});
+    }
+
+    // Great-circle range in nautical miles, and the initial bearing in
+    // degrees true, from one position to another.
+    function rangeNm(lat1, lon1, lat2, lon2) {
+        const r = Math.PI / 180;
+        const a = Math.pow(Math.sin((lat2 - lat1) * r / 2), 2)
+            + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.pow(Math.sin((lon2 - lon1) * r / 2), 2);
+        return 2 * 3440.065 * Math.asin(Math.min(1, Math.sqrt(a)));
+    }
+    function bearing(lat1, lon1, lat2, lon2) {
+        const r = Math.PI / 180;
+        const y = Math.sin((lon2 - lon1) * r) * Math.cos(lat2 * r);
+        const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lon2 - lon1) * r);
+        return (Math.atan2(y, x) / r + 360) % 360;
     }
 
     // Sixteen points of where the wind blows from.
@@ -108,6 +158,7 @@ QtObject {
                     wind.waited = false;
                 } else {
                     wind.state = null;
+                    wind.stations = null;
                 }
             }
         }

@@ -37,7 +37,7 @@ const AHEAD: i64 = 15 * 60;
 const NAMES_KEPT: Duration = Duration::from_secs(7 * 24 * 3600);
 /// The reports weigh about 100 KB, the names 360 KB.
 const LIMIT: u64 = 8 << 20;
-/// Knots in a metre a second.
+/// Knots in a meter a second.
 const KNOTS: f64 = 3600.0 / 1852.0;
 const COLUMNS: [&str; 11] = [
     "STN", "LAT", "LON", "YYYY", "MM", "DD", "hh", "mm", "WDIR", "WSPD", "GST",

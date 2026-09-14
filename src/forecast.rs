@@ -6,7 +6,7 @@ use crate::grib::{self, Field};
 use crate::grid::Grid;
 use std::path::Path;
 
-/// Metres per second to knots.
+/// Meters per second to knots.
 pub const KNOTS: f64 = 3600.0 / 1852.0;
 /// HRRR's longest run.
 pub const MAX_HOURS: u32 = 48;

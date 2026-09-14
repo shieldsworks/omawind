@@ -18,7 +18,7 @@ pub struct Field {
     pub category: u8,
     pub number: u8,
     /// The first fixed surface (code table 4.5), like 103 for a height
-    /// above ground, and its value in metres or pascals.
+    /// above ground, and its value in meters or pascals.
     pub surface: u8,
     pub level: Option<f64>,
     /// The model run, Unix seconds.
@@ -250,9 +250,9 @@ fn grid_section(s: &[u8]) -> Result<Grid, String> {
         let d = be(b) as f64 * 1e-6;
         if d > 180.0 { d - 360.0 } else { d }
     };
-    let (flags, centre, scan) = (s[46], s[63], s[64]);
-    if centre != 0 {
-        return Err("only Lambert grids centred on the north pole are supported".into());
+    let (flags, center, scan) = (s[46], s[63], s[64]);
+    if center != 0 {
+        return Err("only Lambert grids centered on the north pole are supported".into());
     }
     // Rows may run north or south; anything but plain rows of i is refused.
     if scan & !0x40 != 0 {

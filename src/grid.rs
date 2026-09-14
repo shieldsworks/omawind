@@ -17,17 +17,17 @@ pub struct Grid {
     pub lad: f64,
     pub latin1: f64,
     pub latin2: f64,
-    /// Spacing at `lad`, metres.
+    /// Spacing at `lad`, meters.
     pub dx: f64,
     pub dy: f64,
-    /// Earth's radius, metres.
+    /// Earth's radius, meters.
     pub radius: f64,
     /// Winds are given along the grid's x and y, not east and north.
     pub winds_along_grid: bool,
     /// Rows run south to north (scanning mode bit 2).
     pub rows_north: bool,
     // Derived: the cone constant, R·F, and the first point and spacing in
-    // projected metres.
+    // projected meters.
     n: f64,
     rf: f64,
     x1: f64,
@@ -124,7 +124,7 @@ impl Grid {
         self.rf / t(lat).powf(self.n)
     }
 
-    /// Projected metres, from the cone's apex.
+    /// Projected meters, from the cone's apex.
     fn project(&self, lat: f64, lon: f64) -> (f64, f64) {
         let rho = self.rho(lat);
         let theta = self.n * wrap(lon - self.lov).to_radians();

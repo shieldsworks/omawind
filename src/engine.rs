@@ -616,7 +616,7 @@ fn spawn_fetcher(
             }
             // A new region stops a download between hours.
             let moved = std::cell::RefCell::new(None);
-            let cancelled = || {
+            let canceled = || {
                 while let Ok(r) = rx.try_recv() {
                     *moved.borrow_mut() = Some(r);
                 }
@@ -631,7 +631,7 @@ fn spawn_fetcher(
                     &mut |done, total| {
                         let _ = tx.blocking_send(Event::Downloading { done, total });
                     },
-                    &cancelled,
+                    &canceled,
                 )
             });
             // Then the old region's result is dropped and the new one's

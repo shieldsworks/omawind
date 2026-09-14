@@ -1,3 +1,6 @@
 singleton Wind 1.0 Wind.qml
 WindBar 1.0 WindBar.qml
 Outlook 1.0 Outlook.qml
+WindWindow 1.0 WindWindow.qml
+Panel 1.0 Panel.qml
+Theme 1.0 Theme.qml
