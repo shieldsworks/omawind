@@ -8,10 +8,12 @@
   "homepage": "https://omahoy.org",
   "description": "Forecast wind at the boat, from NOAA's HRRR, decoded from GRIB from scratch",
   "kinds": [
-    "bar-widget"
+    "bar-widget",
+    "panel"
   ],
   "entryPoints": {
-    "barWidget": "ui/WindBar.qml"
+    "barWidget": "ui/WindBar.qml",
+    "panel": "ui/Panel.qml"
   },
   "barWidget": {
     "displayName": "Omawind",
