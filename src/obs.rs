@@ -151,12 +151,16 @@ fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
         f[year], f[month], f[day], f[hour], f[minute]
     ))?;
     let (wspd, wdir, gst) = (value(wspd)?, value(wdir)?, value(gst)?);
+    // A speed or direction out of range is a broken row, not a missing
+    // value like MM, so it mustn't stand in for a good report.
+    let in_range = |v: Option<f64>, top: f64| v.is_none_or(|v| (0.0..=top).contains(&v));
+    if !in_range(wspd, 100.0) || !in_range(wdir, 360.0) {
+        return None;
+    }
     let id = id.to_ascii_uppercase();
     // No speed, or a speed without a direction: no barb to draw.
-    let speed = wspd.filter(|v| (0.0..=100.0).contains(v));
-    let from_deg = wdir
-        .filter(|v| (0.0..=360.0).contains(v))
-        .map(|v| v % 360.0);
+    let speed = wspd;
+    let from_deg = wdir.map(|v| v % 360.0);
     let wind = match speed {
         Some(s) if from_deg.is_some() || s == 0.0 => Some(Station {
             id: id.clone(),
@@ -281,14 +285,15 @@ pub fn latest(source: &Source, names: &HashMap<String, String>) -> Result<Vec<Re
 
 /// Folds a fetch into the reports kept: each station's newest wins, and a
 /// station the fetch left out keeps its last until that's too old to show,
-/// so a file cut short can't empty the Bay.
+/// so a file cut short can't empty the Bay. A report dated ahead of the
+/// clock is never kept, or it would outrank every true one after it.
 pub fn merge(kept: &mut BTreeMap<String, Report>, fetched: Vec<Report>, now: i64) {
-    for r in fetched {
+    for r in fetched.into_iter().filter(|r| r.time <= now + AHEAD) {
         if kept.get(&r.id).is_none_or(|old| old.time <= r.time) {
             kept.insert(r.id.clone(), r);
         }
     }
-    kept.retain(|_, r| r.time > now - MAX_AGE);
+    kept.retain(|_, r| r.time > now - MAX_AGE && r.time <= now + AHEAD);
 }
 
 /// The winds worth showing for a region now: inside it, and taken in the
@@ -372,6 +377,8 @@ SHORT 37.000 -122.000 2026 09 14
             "AAMC1 37.772 -122.300 2026 09 14 17 00\n",
             "AAMC1 37.772 -122.300 2026 09 14 17 00 120 fast MM\n",
             "AAMC1 MM -122.300 2026 09 14 17 00 120 1.5 MM\n",
+            "AAMC1 37.772 -122.300 2026 09 14 17 00 999 1.5 MM\n",
+            "AAMC1 37.772 -122.300 2026 09 14 17 00 120 -1 MM\n",
             "<html>\nnot a report\n</html>\n",
         ] {
             let e = parse_latest(&format!("{HEADER}{body}")).unwrap_err();
@@ -506,6 +513,44 @@ RCMC1 37.923 -122.410 2026 09 14 17 00 160 2.1 MM
         // Two hours on, what hasn't reported since is let go.
         merge(&mut kept, Vec::new(), now + 2 * time::HOUR);
         assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn broken_or_future_reports_dont_displace_a_good_one() {
+        let now = time::unix(2026, 9, 14, 17, 30, 0);
+        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}")).unwrap_or_default();
+        let from = |kept: &BTreeMap<String, Report>| -> Vec<Option<f64>> {
+            current(kept.values(), Region::BAY, now)
+                .map(|s| s.from_deg)
+                .collect()
+        };
+        let mut kept = BTreeMap::new();
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM\n"),
+            now,
+        );
+        // Newer, but with a direction or speed that can't be: not a report.
+        for broken in [
+            "AAMC1 37.772 -122.300 2026 09 14 17 06 999 1.5 MM\n",
+            "AAMC1 37.772 -122.300 2026 09 14 17 06 120 -1 MM\n",
+        ] {
+            merge(&mut kept, fetch(broken), now);
+            assert_eq!(from(&kept), [Some(120.0)], "{broken:?}");
+        }
+        // Dated in 2099: never kept, so the next true report still counts.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2099 09 14 17 00 200 1.5 MM\n"),
+            now,
+        );
+        assert_eq!(kept["AAMC1"].time, time::unix(2026, 9, 14, 17, 0, 0));
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 12 140 1.5 MM\n"),
+            now,
+        );
+        assert_eq!(from(&kept), [Some(140.0)]);
     }
 
     #[test]
