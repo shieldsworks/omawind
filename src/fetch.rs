@@ -15,7 +15,6 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::unix::io::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -161,8 +160,6 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Its own process group, so a timeout stops anything it started.
-        .process_group(0)
         .spawn()
         .map_err(|e| format!("can't run curl: {e}"))?;
     let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
@@ -220,7 +217,8 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     // curl has gone, but something it started may still hold its pipes:
     // the rest of the answer is waited for only until the deadline.
     let (Ok(body), Ok(why)) = (body_rx.recv_timeout(left()), why_rx.recv_timeout(left())) else {
-        kill_group(child.id());
+        // curl is reaped; the readers finish when whatever holds the pipes
+        // lets go.
         return Err(format!("{url}: no answer in {} s", DEADLINE.as_secs()));
     };
     if !status.success() {
@@ -237,18 +235,12 @@ fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     }
 }
 
-/// Kills curl and anything it started, then reaps it.
+/// Kills curl and reaps it. curl stays in omawind's process group, so
+/// Ctrl-C reaches it too, and if omawind exits mid-download curl fails its
+/// next write to the closed pipe, or stops at its own --max-time.
 fn stop(child: &mut Child) {
-    kill_group(child.id());
+    let _ = child.kill();
     let _ = child.wait();
-}
-
-/// Only while the group has a member, so its id can't have been reused.
-fn kill_group(leader: u32) {
-    // SAFETY: a signal to the process group curl was started to lead.
-    unsafe {
-        libc::kill(-(leader as libc::pid_t), libc::SIGKILL);
-    }
 }
 
 /// The newest run with its first 18 hours out, from today's listing, or
