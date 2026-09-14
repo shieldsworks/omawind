@@ -6,7 +6,7 @@
 use crate::config::Region;
 use crate::fetch;
 use crate::time;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -60,12 +60,11 @@ pub struct Station {
     pub gust_kn: Option<f64>,
 }
 
-/// The stations reporting wind in `latest_obs.txt`, by id. Columns are found
-/// by the header's names. A row without a speed, or with a speed and no
-/// direction, has no barb to draw and is left out, as is a row that doesn't
-/// read. A file with no row that reads is an error, not an empty Bay, so the
-/// last good reports stay.
-pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
+/// Each station's newest report in `latest_obs.txt`, by id, with a wind to
+/// draw or not. Columns are found by the header's names. A row that doesn't
+/// read is left out. A file with no row that reads is an error, not an
+/// empty Bay, so the last good reports stay.
+pub fn parse_latest(text: &str) -> Result<Vec<Report>, String> {
     let header = text
         .lines()
         .find(|l| l.starts_with("#STN"))
@@ -104,16 +103,18 @@ pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
     if read == 0 {
         return Err("latest_obs.txt: no reports in it".into());
     }
-    let mut stations: Vec<Station> = newest.into_values().filter_map(|r| r.wind).collect();
-    stations.sort_by(|a, b| a.id.cmp(&b.id));
-    Ok(stations)
+    let mut reports: Vec<Report> = newest.into_values().collect();
+    reports.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(reports)
 }
 
-/// A row that reads: a station's report, with a wind to draw or not.
-struct Report {
-    id: String,
-    time: i64,
-    wind: Option<Station>,
+/// A station's report. Without a speed, or with a speed and no direction,
+/// it has no wind to draw, but it's still the station's newest word.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Report {
+    pub id: String,
+    pub time: i64,
+    pub wind: Option<Station>,
 }
 
 /// None for a row that doesn't read. The row has been checked to be whole,
@@ -269,21 +270,40 @@ fn save(file: &Path, bytes: &[u8]) {
 }
 
 /// Every station's latest report, named where the table names it.
-pub fn latest(source: &Source, names: &HashMap<String, String>) -> Result<Vec<Station>, String> {
+pub fn latest(source: &Source, names: &HashMap<String, String>) -> Result<Vec<Report>, String> {
     let bytes = fetch::get(&source.latest, LIMIT)?;
-    let mut stations = parse_latest(&String::from_utf8_lossy(&bytes))?;
-    for s in &mut stations {
+    let mut reports = parse_latest(&String::from_utf8_lossy(&bytes))?;
+    for s in reports.iter_mut().filter_map(|r| r.wind.as_mut()) {
         s.name = names.get(&s.id).cloned();
     }
-    Ok(stations)
+    Ok(reports)
 }
 
-/// The reports worth showing for a region now: inside it, and taken in the
+/// Folds a fetch into the reports kept: each station's newest wins, and a
+/// station the fetch left out keeps its last until that's too old to show,
+/// so a file cut short can't empty the Bay.
+pub fn merge(kept: &mut BTreeMap<String, Report>, fetched: Vec<Report>, now: i64) {
+    for r in fetched {
+        if kept.get(&r.id).is_none_or(|old| old.time <= r.time) {
+            kept.insert(r.id.clone(), r);
+        }
+    }
+    kept.retain(|_, r| r.time > now - MAX_AGE);
+}
+
+/// The winds worth showing for a region now: inside it, and taken in the
 /// last `MAX_AGE`.
-pub fn current(stations: &[Station], region: Region, now: i64) -> impl Iterator<Item = &Station> {
-    stations.iter().filter(move |s| {
-        region.contains(s.lat, s.lon) && s.time > now - MAX_AGE && s.time <= now + AHEAD
-    })
+pub fn current<'a>(
+    reports: impl IntoIterator<Item = &'a Report>,
+    region: Region,
+    now: i64,
+) -> impl Iterator<Item = &'a Station> {
+    reports
+        .into_iter()
+        .filter_map(|r| r.wind.as_ref())
+        .filter(move |s| {
+            region.contains(s.lat, s.lon) && s.time > now - MAX_AGE && s.time <= now + AHEAD
+        })
 }
 
 #[cfg(test)]
@@ -297,8 +317,13 @@ mod tests {
 #text      deg      deg   yr mo day hr mn degT  m/s   m/s
 ";
 
+    /// The winds of each station's newest report.
+    fn winds(reports: Vec<Report>) -> Vec<Station> {
+        reports.into_iter().filter_map(|r| r.wind).collect()
+    }
+
     fn parse(rows: &str) -> Vec<Station> {
-        parse_latest(&format!("{HEADER}{rows}")).unwrap()
+        winds(parse_latest(&format!("{HEADER}{rows}")).unwrap())
     }
 
     fn ids(stations: &[Station]) -> Vec<&str> {
@@ -377,7 +402,7 @@ SHORT 37.000 -122.000 2026 09 14
         }
         let whole = "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  19.6    MM   MM     MM\n";
         assert_eq!(
-            ids(&parse_latest(&format!("{header}{whole}")).unwrap()),
+            ids(&winds(parse_latest(&format!("{header}{whole}")).unwrap())),
             ["AAMC1"]
         );
     }
@@ -403,7 +428,7 @@ PXOC1 37.798 -122.393 2026 09 14 17 00  MM 3.1 MM
     #[test]
     fn finds_columns_by_the_header() {
         let moved = "#STN LAT LON WSPD GST WDIR YYYY MM DD hh mm\nAAMC1 37.772 -122.300 1.5 MM 360 2026 09 14 17 00\n";
-        let s = parse_latest(moved).unwrap();
+        let s = winds(parse_latest(moved).unwrap());
         assert_eq!(s[0].from_deg, Some(0.0));
         assert!(
             parse_latest("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 2.1\n")
@@ -419,19 +444,68 @@ PXOC1 37.798 -122.393 2026 09 14 17 00  MM 3.1 MM
 
     #[test]
     fn shows_the_regions_recent_reports() {
-        let s = parse(
-            "\
+        let r = parse_latest(&format!(
+            "{HEADER}\
 AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM
 OLD01 37.772 -122.300 2026 09 14 15 00 120 1.5 MM
 AHEAD 37.772 -122.300 2026 09 14 18 00 120 1.5 MM
 51201 21.673 -158.116 2026 09 14 17 00 120 1.5 MM
-",
-        );
+"
+        ))
+        .unwrap();
         let now = time::unix(2026, 9, 14, 17, 30, 0);
-        let shown: Vec<&str> = current(&s, Region::BAY, now)
+        let shown: Vec<&str> = current(&r, Region::BAY, now)
             .map(|s| s.id.as_str())
             .collect();
         assert_eq!(shown, ["AAMC1"]);
+    }
+
+    #[test]
+    fn a_fetch_cut_short_keeps_the_stations_it_missed() {
+        let now = time::unix(2026, 9, 14, 17, 30, 0);
+        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}")).unwrap();
+        let shown = |kept: &BTreeMap<String, Report>| -> Vec<(String, Option<f64>)> {
+            current(kept.values(), Region::BAY, now)
+                .map(|s| (s.id.clone(), s.from_deg))
+                .collect()
+        };
+        let mut kept = BTreeMap::new();
+        merge(
+            &mut kept,
+            fetch(
+                "\
+AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM
+RCMC1 37.923 -122.410 2026 09 14 17 00 160 2.1 MM
+",
+            ),
+            now,
+        );
+        // The next file stops after Alameda: Richmond keeps its report.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 06 130 2.0 MM\n"),
+            now,
+        );
+        assert_eq!(
+            shown(&kept),
+            [("AAMC1".into(), Some(130.0)), ("RCMC1".into(), Some(160.0))]
+        );
+        // A newer report without a wind hides the old one's, fetch to fetch.
+        merge(
+            &mut kept,
+            fetch("RCMC1 37.923 -122.410 2026 09 14 17 12 MM MM MM\n"),
+            now,
+        );
+        // And an older report doesn't replace a newer one.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 16 00 100 1.0 MM\n"),
+            now,
+        );
+        assert_eq!(shown(&kept), [("AAMC1".into(), Some(130.0))]);
+        // Two hours on, what hasn't reported since is let go.
+        merge(&mut kept, Vec::new(), now + 2 * time::HOUR);
+        assert!(kept.is_empty());
     }
 
     #[test]

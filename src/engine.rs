@@ -6,11 +6,11 @@ use crate::config::{self, Region, Settings};
 use crate::fetch;
 use crate::forecast::{Forecast, Sample};
 use crate::keel::{self, Boat, Update};
-use crate::obs::{self, Station};
+use crate::obs;
 use crate::time;
 use serde_json::{Map, Value, json};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     ffi::OsString,
     fs::{self, File, OpenOptions},
     io,
@@ -76,7 +76,7 @@ enum Event {
     Checking,
     Downloading { done: usize, total: usize },
     Fetched(Result<(PathBuf, usize), String>),
-    Stations(Result<Vec<Station>, String>),
+    Stations(Result<Vec<obs::Report>, String>),
     Request { client: u64, message: Value },
 }
 
@@ -96,8 +96,8 @@ struct Wind {
     run_dir: Option<PathBuf>,
     load_problem: Option<String>,
     fetch: FetchState,
-    /// Every station's latest report, whatever the region.
-    stations: Vec<Station>,
+    /// Every station's newest report, whatever the region, by id.
+    stations: BTreeMap<String, obs::Report>,
     stations_fetch: FetchState,
     boat: Option<Boat>,
     keel: &'static str,
@@ -253,7 +253,7 @@ impl Wind {
 
     /// The region's recent reports from NDBC's stations.
     fn stations(&self, now: i64) -> String {
-        let list: Vec<Value> = obs::current(&self.stations, self.settings.region, now)
+        let list: Vec<Value> = obs::current(self.stations.values(), self.settings.region, now)
             .map(|s| {
                 let mut m = Map::new();
                 m.insert("id".into(), json!(s.id));
@@ -411,7 +411,7 @@ pub async fn run(config: Config) -> io::Result<()> {
             message: None,
             checked: None,
         },
-        stations: Vec::new(),
+        stations: BTreeMap::new(),
         stations_fetch: FetchState {
             status: if config.stations.is_some() {
                 "waiting"
@@ -483,8 +483,8 @@ pub async fn run(config: Config) -> io::Result<()> {
                     // The hours that did arrive may have made a run ready.
                     wind.load_newest();
                 }
-                Event::Stations(Ok(stations)) => {
-                    wind.stations = stations;
+                Event::Stations(Ok(reports)) => {
+                    obs::merge(&mut wind.stations, reports, now);
                     wind.stations_fetch.status = "ok";
                     wind.stations_fetch.message = None;
                     wind.stations_fetch.checked = Some(now);

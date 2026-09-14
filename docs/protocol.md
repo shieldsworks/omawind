@@ -116,7 +116,8 @@ replace their copy.
   latest reports every 10 minutes, about as often as NDBC updates them.
 - `status` is `off` (started with `--offline`), `waiting` (no answer yet),
   `ok`, or `error` with `message`. After an error the last reports stay
-  until they're too old to show.
+  until they're too old to show, and so does the last report of a station
+  a fetch left out, so a file cut short can't empty the region.
 - `checked` is when NDBC last answered.
 - Each station: `id` is NDBC's, and `name` is sent when NDBC's table has
   one. `time` is when the report was taken; a report over 2 hours old is left
