@@ -42,7 +42,9 @@ Item {
 
     readonly property var here: Wind.here
     readonly property var forecast: Wind.forecast
+    // A position to measure from: finite, and on the Earth.
     readonly property bool placed: !!here && typeof here.lat === "number" && typeof here.lon === "number"
+        && isFinite(here.lat) && isFinite(here.lon) && Math.abs(here.lat) <= 90 && Math.abs(here.lon) <= 180
     readonly property string where: !here ? "" : here.at === "home" ? "home" : "the boat"
 
     // The stations, nearest the boat (or home) first, each with its range
