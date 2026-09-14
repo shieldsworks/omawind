@@ -370,7 +370,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Downloads the hours of `run` not cached, or cached but not fitting:
 /// each is checked as the forecast will load it, against the hours before.
-/// `progress` hears the hour under way and the run's length; `cancelled`
+/// `progress` hears the hour under way and the run's length; `canceled`
 /// is asked between hours. Returns the run's folder and how many hours
 /// were fetched.
 pub fn download(
@@ -378,7 +378,7 @@ pub fn download(
     run: &Run,
     region: &Region,
     progress: &mut dyn FnMut(usize, usize),
-    cancelled: &dyn Fn() -> bool,
+    canceled: &dyn Fn() -> bool,
 ) -> Result<(PathBuf, usize), String> {
     let _lock = lock(cache, true)?;
     let dir = runs_dir(cache, region).join(run.key());
@@ -394,7 +394,7 @@ pub fn download(
         {
             continue;
         }
-        if cancelled() {
+        if canceled() {
             return Err("stopped: the region changed".into());
         }
         progress(hour as usize, hours.len());
