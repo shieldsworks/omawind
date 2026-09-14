@@ -78,12 +78,17 @@ pub fn parse_latest(text: &str) -> Result<Vec<Station>, String> {
             .position(|&h| h == name)
             .ok_or_else(|| format!("latest_obs.txt: no {name} column"))?;
     }
-    let width = cols.iter().max().map_or(0, |&c| c + 1);
     let mut newest: HashMap<String, Report> = HashMap::new();
     let mut read = 0;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < width {
+        // A whole row: every column the header names, each after the
+        // station's id a number or MM, whether it's read here or not.
+        let whole = fields.len() == heads.len()
+            && fields.iter().enumerate().all(|(i, t)| {
+                i == cols[0] || *t == "MM" || t.parse::<f64>().is_ok_and(f64::is_finite)
+            });
+        if !whole {
             continue;
         }
         let Some(r) = report(&fields, &cols) else {
@@ -111,8 +116,8 @@ struct Report {
     wind: Option<Station>,
 }
 
-/// None for a row that doesn't read: each value must be a number or NDBC's
-/// missing value, `MM`. The row has been checked to be wide enough.
+/// None for a row that doesn't read. The row has been checked to be whole,
+/// each value a number or NDBC's missing value, `MM`.
 fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
     let [
         stn,
@@ -286,9 +291,10 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    // Only the columns read, so a row of 11 is whole.
     const HEADER: &str = "\
-#STN       LAT      LON  YYYY MM DD hh mm WDIR WSPD   GST WVHT  DPD APD MWD   PRES
-#text      deg      deg   yr mo day hr mn degT  m/s   m/s   m   sec sec degT   hPa
+#STN       LAT      LON  YYYY MM DD hh mm WDIR WSPD   GST
+#text      deg      deg   yr mo day hr mn degT  m/s   m/s
 ";
 
     fn parse(rows: &str) -> Vec<Station> {
@@ -301,9 +307,7 @@ mod tests {
 
     #[test]
     fn reads_a_report_in_knots() {
-        let s = parse(
-            "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5\n",
-        );
+        let s = parse("AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1\n");
         assert_eq!(ids(&s), ["AAMC1"]);
         let a = &s[0];
         assert_eq!((a.lat, a.lon), (37.772, -122.3));
@@ -352,6 +356,29 @@ SHORT 37.000 -122.000 2026 09 14
         assert_eq!(
             parse("46214 37.944 -123.466 2026 09 14 16 56 MM MM MM\n"),
             []
+        );
+    }
+
+    #[test]
+    fn a_row_needs_every_column_of_the_header() {
+        // NDBC's whole header: a row cut off after GST, or with junk in a
+        // column not read, isn't a report.
+        let header = "\
+#STN       LAT      LON  YYYY MM DD hh mm WDIR WSPD   GST WVHT  DPD APD MWD   PRES  PTDY  ATMP  WTMP  DEWP  VIS   TIDE
+#text      deg      deg   yr mo day hr mn degT  m/s   m/s   m   sec sec degT   hPa   hPa  degC  degC  degC  nmi     ft
+";
+        for body in [
+            "46214    37.944 -123.466 2026 09 14 16 56  MM    MM    MM\n",
+            "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  19.6    MM   MM     MM MM\n",
+            "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  junk    MM   MM     MM\n",
+        ] {
+            let e = parse_latest(&format!("{header}{body}")).unwrap_err();
+            assert!(e.contains("no reports"), "{body:?}: {e}");
+        }
+        let whole = "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  19.6    MM   MM     MM\n";
+        assert_eq!(
+            ids(&parse_latest(&format!("{header}{whole}")).unwrap()),
+            ["AAMC1"]
         );
     }
 
