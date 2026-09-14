@@ -97,7 +97,11 @@ impl Forecast {
             let pressure = find(&fields, 3, 198, 101, None).or(find(&fields, 3, 1, 101, None));
             let used = [Some(u), Some(v), gust, pressure];
             for f in used.iter().flatten() {
-                if f.grid != u.grid || f.reference != u.reference || f.lead != h as i64 * 3600 {
+                if f.grid != u.grid
+                    || f.values.len() != u.grid.len()
+                    || f.reference != u.reference
+                    || f.lead != h as i64 * 3600
+                {
                     return Err(format!(
                         "hour {h}: {} doesn't match the run, hour or grid",
                         f.name()
@@ -175,7 +179,17 @@ impl Forecast {
         let (fi, fj) = (fi.clamp(0.0, last_i), fj.clamp(0.0, last_j));
         let i0 = (fi.floor() as usize).min(nx - 2);
         let j0 = (fj.floor() as usize).min(ny - 2);
-        let (wx, wy) = (fi - i0 as f64, fj - j0 as f64);
+        // Within a hair of a point is on it, so a gap beside it doesn't count.
+        let snap = |w: f64| {
+            if w < 1e-6 {
+                0.0
+            } else if w > 1.0 - 1e-6 {
+                1.0
+            } else {
+                w
+            }
+        };
+        let (wx, wy) = (snap(fi - i0 as f64), snap(fj - j0 as f64));
         let corners = [
             (j0 * nx + i0, (1.0 - wx) * (1.0 - wy)),
             (j0 * nx + i0 + 1, wx * (1.0 - wy)),
@@ -188,9 +202,11 @@ impl Forecast {
     /// Weighted points, weighted hours.
     fn combine(&self, t: i64, points: &[(usize, f64)]) -> Option<Sample> {
         let (a, b, w) = self.bracket(t)?;
+        // Only what carries weight counts: a gap, or a field one hour
+        // lacks, matters only when it's part of the answer.
         let at = |values: &[f32]| -> Option<f64> {
             let mut sum = 0.0;
-            for &(i, weight) in points {
+            for &(i, weight) in points.iter().filter(|p| p.1 > 0.0) {
                 let v = f64::from(values[i]);
                 if v.is_nan() {
                     return None;
@@ -200,7 +216,9 @@ impl Forecast {
             Some(sum)
         };
         let both = |x: Option<&Vec<f32>>, y: Option<&Vec<f32>>| -> Option<f64> {
-            Some(at(x?)? * (1.0 - w) + at(y?)? * w)
+            let before = if w < 1.0 { at(x?)? * (1.0 - w) } else { 0.0 };
+            let after = if w > 0.0 { at(y?)? * w } else { 0.0 };
+            Some(before + after)
         };
         let u = both(Some(&a.u), Some(&b.u))?;
         let v = both(Some(&a.v), Some(&b.v))?;
@@ -266,5 +284,83 @@ impl Forecast {
             })
             .collect();
         Some((step, points))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grid::Lambert;
+
+    fn field(number: u8, surface: u8, level: Option<f64>, hour: i64, values: Vec<f32>) -> Field {
+        let grid = Grid::lambert(Lambert {
+            nx: 2,
+            ny: 2,
+            la1: 37.8,
+            lo1: -122.5,
+            lov: -97.5,
+            lad: 38.5,
+            latin1: 38.5,
+            latin2: 38.5,
+            dx: 3000.0,
+            dy: 3000.0,
+            radius: 6_371_229.0,
+            winds_along_grid: false,
+            rows_north: true,
+        })
+        .unwrap();
+        Field {
+            discipline: 0,
+            category: 2,
+            number,
+            surface,
+            level,
+            reference: 0,
+            lead: hour * 3600,
+            grid,
+            values,
+        }
+    }
+
+    /// Wind toward the east at `u` m/s, and gusts of 5 if `gust`.
+    fn hour(h: i64, gust: bool, u: Vec<f32>) -> Vec<Field> {
+        let mut f = vec![
+            field(2, 103, Some(10.0), h, u),
+            field(3, 103, Some(10.0), h, vec![0.0; 4]),
+        ];
+        if gust {
+            f.push(field(22, 1, None, h, vec![5.0; 4]));
+        }
+        f
+    }
+
+    #[test]
+    fn what_carries_no_weight_doesnt_count() {
+        // Gusts in the first hour only, and a gap beside the first point.
+        let f = Forecast::from_hours(vec![
+            hour(0, true, vec![1.0, f32::NAN, 1.0, 1.0]),
+            hour(1, false, vec![1.0; 4]),
+        ])
+        .unwrap();
+        let (lat, lon) = f.positions[0];
+        let on_the_hour = f.sample(lat, lon, 0).unwrap();
+        assert!((on_the_hour.speed_kn - KNOTS).abs() < 1e-9);
+        assert_eq!(on_the_hour.from_deg, 270.0);
+        assert!((on_the_hour.gust_kn.unwrap() - 5.0 * KNOTS).abs() < 1e-9);
+        // Halfway to the next hour, which has none, the gust is unknown.
+        assert_eq!(f.sample(lat, lon, 1800).unwrap().gust_kn, None);
+        // Halfway to the gap, the wind is unknown.
+        let (lat2, lon2) = f.positions[1];
+        assert!(
+            f.sample((lat + lat2) / 2.0, (lon + lon2) / 2.0, 0)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_field_shorter_than_its_grid_is_refused() {
+        let mut short = hour(0, false, vec![1.0; 4]);
+        short[1].values.truncate(3);
+        assert!(Forecast::from_hours(vec![short]).is_err());
     }
 }

@@ -401,8 +401,8 @@ pub async fn run(config: Config) -> io::Result<()> {
                     wind.fetch.progress = None;
                     wind.fetch.message = None;
                     wind.fetch.checked = Some(now);
-                    let newer = wind.run_dir.as_ref().is_none_or(|d| d.file_name() < dir.file_name());
-                    if new > 0 || newer {
+                    // A new run, or new hours of this one.
+                    if new > 0 || wind.run_dir.as_ref() != Some(&dir) {
                         wind.load_newest();
                     }
                     if let Some(shown) = wind.run_dir.clone() {
@@ -413,12 +413,16 @@ pub async fn run(config: Config) -> io::Result<()> {
                     wind.fetch.status = "error";
                     wind.fetch.progress = None;
                     wind.fetch.message = Some(e);
+                    // The hours that did arrive may have made a run ready.
+                    wind.load_newest();
                 }
                 Event::Request { client, message } => {
                     let reply = encode(&wind.answer(&message, now).to_string());
-                    if let Some(c) = clients.iter().find(|c| c.id == client) {
-                        // A full queue drops the app at the next broadcast.
-                        let _ = c.tx.try_send(reply);
+                    // An app too far behind to take its answer is let go.
+                    if let Some(i) = clients.iter().position(|c| c.id == client)
+                        && clients[i].tx.try_send(reply).is_err()
+                    {
+                        clients.remove(i);
                     }
                 }
             },

@@ -11,8 +11,12 @@ use crate::forecast::{MAX_HOURS, hour_file};
 use crate::grib;
 use crate::time;
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
+use std::io::Read;
+use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 const NOMADS: &str = "https://nomads.ncep.noaa.gov";
@@ -26,6 +30,10 @@ const USER_AGENT: &str = concat!(
 pub const READY_HOURS: u32 = 18;
 /// Between one download and the next, to go easy on NOMADS.
 const PAUSE: Duration = Duration::from_millis(300);
+/// The most a listing or an hour may weigh. The Bay's hours are 33 KB,
+/// the biggest region's under half a megabyte, a day's listing 100 KB.
+const LISTING_LIMIT: u64 = 8 << 20;
+const HOUR_LIMIT: u64 = 16 << 20;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Run {
@@ -124,8 +132,9 @@ pub fn filter_url(run: &Run, hour: u32, r: &Region) -> String {
 }
 
 /// NOMADS answers over HTTP/2 with a header curl rejects, so HTTP/1.1.
-fn get(url: &str) -> Result<Vec<u8>, String> {
-    let out = Command::new("curl")
+/// No more than `limit` bytes are read, whatever the server says.
+fn get(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut child = Command::new("curl")
         .args([
             "--http1.1",
             "--fail",
@@ -133,33 +142,50 @@ fn get(url: &str) -> Result<Vec<u8>, String> {
             "--show-error",
             "--location",
         ])
+        .args(["--connect-timeout", "20", "--max-time", "120"])
         .args([
-            "--connect-timeout",
-            "20",
-            "--max-time",
-            "120",
             "--user-agent",
             USER_AGENT,
+            "--max-filesize",
+            &limit.to_string(),
         ])
         .arg(url)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("can't run curl: {e}"))?;
-    if !out.status.success() {
-        let why = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    let mut body = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .map(|out| out.take(limit + 1).read_to_end(&mut body));
+    if !matches!(read, Some(Ok(_))) || body.len() as u64 > limit {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("{url}: no answer, or more than {} MB", limit >> 20));
+    }
+    let mut why = String::new();
+    if let Some(err) = child.stderr.take() {
+        let _ = err.take(64 * 1024).read_to_string(&mut why);
+    }
+    let status = child.wait().map_err(|e| format!("curl: {e}"))?;
+    if !status.success() {
+        let why = why.trim();
         return Err(if why.is_empty() {
             format!("curl failed on {url}")
         } else {
-            why
+            why.to_string()
         });
     }
-    Ok(out.stdout)
+    Ok(body)
 }
 
 /// The newest run with its first 18 hours out, from today's listing, or
 /// yesterday's just after midnight UTC.
 pub fn newest_run(now: i64) -> Result<Option<Run>, String> {
     for day in [time::day_name(now), time::day_name(now - 86_400)] {
-        let html = match get(&listing_url(&day)) {
+        let html = match get(&listing_url(&day), LISTING_LIMIT) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             // Today's folder doesn't exist until the first run lands.
             Err(e) if e.contains("404") => continue,
@@ -226,8 +252,39 @@ fn check(bytes: &[u8], run: &Run, hour: u32) -> Result<(), String> {
     }
 }
 
+/// The cache's lock, so `omawind fetch` and the engine take turns writing
+/// it. Without `wait`, None when the other has it.
+fn lock(cache: &Path, wait: bool) -> Result<Option<File>, String> {
+    let dir = runs_dir(cache);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let path = dir.join(".lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let how = if wait {
+        libc::LOCK_EX
+    } else {
+        libc::LOCK_EX | libc::LOCK_NB
+    };
+    // SAFETY: `flock` on a descriptor `file` owns; it's released when the
+    // file closes.
+    if unsafe { libc::flock(file.as_raw_fd(), how) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if !wait && e.kind() == std::io::ErrorKind::WouldBlock {
+            return Ok(None);
+        }
+        return Err(format!("{}: {e}", path.display()));
+    }
+    Ok(Some(file))
+}
+
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("part");
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_extension(format!("part.{}.{n}", std::process::id()));
     std::fs::write(&tmp, bytes).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
@@ -240,6 +297,7 @@ pub fn download(
     region: &Region,
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<(PathBuf, usize), String> {
+    let _lock = lock(cache, true)?;
     let dir = runs_dir(cache).join(run.key());
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let region_file = dir.join("region");
@@ -265,21 +323,32 @@ pub fn download(
         if done > 0 {
             std::thread::sleep(PAUSE);
         }
-        let bytes = get(&filter_url(run, hour, region))?;
+        let bytes = get(&filter_url(run, hour, region), HOUR_LIMIT)?;
         check(&bytes, run, hour).map_err(|e| format!("{} hour {hour}: {e}", run.key()))?;
         write_atomic(&dir.join(hour_file(hour)), &bytes)?;
     }
     Ok((dir, missing.len()))
 }
 
-/// Deletes cached runs other than the ones named.
+/// Deletes cached runs older than the newest one named, except those
+/// named. A newer run, perhaps just fetched by another omawind, stays.
+/// Skipped while another omawind is writing the cache.
 pub fn prune(cache: &Path, keep: &[&Path]) {
+    let Some(newest) = keep.iter().filter_map(|p| p.file_name()).max() else {
+        return;
+    };
+    let Ok(Some(_lock)) = lock(cache, false) else {
+        return;
+    };
     let Ok(rd) = std::fs::read_dir(runs_dir(cache)) else {
         return;
     };
     for e in rd.flatten() {
         let name = e.file_name();
-        if is_run_name(&name.to_string_lossy()) && !keep.contains(&e.path().as_path()) {
+        if is_run_name(&name.to_string_lossy())
+            && name.as_os_str() < newest
+            && !keep.contains(&e.path().as_path())
+        {
             let _ = std::fs::remove_dir_all(e.path());
         }
     }
@@ -364,6 +433,9 @@ mod tests {
         assert_eq!(newest_cached(&cache, &Region::BAY), Some(newer.clone()));
         prune(&cache, &[&newer]);
         assert!(!old.exists() && newer.exists());
+        let newest = make("2026091405", 3, &Region::BAY);
+        prune(&cache, &[&newer]);
+        assert!(newest.exists() && newer.exists());
         std::fs::remove_dir_all(&cache).unwrap();
     }
 }

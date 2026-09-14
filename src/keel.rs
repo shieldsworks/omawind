@@ -4,11 +4,14 @@
 use serde_json::Value;
 use std::path::PathBuf;
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
     net::UnixStream,
     sync::mpsc,
     time::{Duration, sleep},
 };
+
+/// omakeel's longest line, a thousand vessels' worth, is well under this.
+const MAX_LINE: u64 = 4 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Boat {
@@ -75,9 +78,21 @@ pub async fn follow(path: PathBuf, tx: mpsc::Sender<Update>) {
     loop {
         let mut wait = Duration::from_secs(2);
         if let Ok(stream) = UnixStream::connect(&path).await {
-            let mut lines = BufReader::new(stream).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                let Some(update) = read(&line) else { continue };
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                // A line this long isn't omakeel's: let go, and try again.
+                let got = (&mut reader)
+                    .take(MAX_LINE + 1)
+                    .read_until(b'\n', &mut line)
+                    .await;
+                if !matches!(got, Ok(n) if n > 0 && n as u64 <= MAX_LINE) {
+                    break;
+                }
+                let Some(update) = read(&String::from_utf8_lossy(&line)) else {
+                    continue;
+                };
                 if tx.send(update).await.is_err() {
                     return;
                 }

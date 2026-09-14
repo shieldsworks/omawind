@@ -6,6 +6,11 @@
 use crate::grid::{Grid, Lambert};
 use crate::time;
 
+/// The most points one field may have: HRRR's whole grid has 1.9 million.
+const MAX_POINTS: usize = 4_000_000;
+/// The most values one file may decode to, all its fields together.
+const MAX_VALUES: usize = 16_000_000;
+
 /// One field: a parameter at one level and one forecast time.
 #[derive(Clone, Debug)]
 pub struct Field {
@@ -63,6 +68,7 @@ fn signed(b: &[u8]) -> i64 {
 /// Every field in `bytes`: one or more whole GRIB2 messages, back to back.
 pub fn parse(bytes: &[u8]) -> Result<Vec<Field>, String> {
     let mut fields = Vec::new();
+    let mut budget = MAX_VALUES;
     let mut pos = 0;
     let mut n = 0;
     while pos < bytes.len() {
@@ -79,7 +85,7 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Field>, String> {
             return Err(format!("message {n}: cut short"));
         }
         let len = len as usize;
-        message(&rest[..len], &mut fields).map_err(|e| format!("message {n}: {e}"))?;
+        message(&rest[..len], &mut fields, &mut budget).map_err(|e| format!("message {n}: {e}"))?;
         pos += len;
     }
     Ok(fields)
@@ -101,7 +107,7 @@ struct Packing {
     bits: u32,
 }
 
-fn message(m: &[u8], out: &mut Vec<Field>) -> Result<(), String> {
+fn message(m: &[u8], out: &mut Vec<Field>, budget: &mut usize) -> Result<(), String> {
     let discipline = m[6];
     let mut pos = 16;
     let mut reference = None;
@@ -159,7 +165,13 @@ fn message(m: &[u8], out: &mut Vec<Field>) -> Result<(), String> {
                         defined = Some(map.clone());
                         Some(map)
                     }
-                    254 => Some(defined.clone().ok_or("reuses a bitmap never defined")?),
+                    254 => {
+                        let map = defined.clone().ok_or("reuses a bitmap never defined")?;
+                        if map.len() != points {
+                            return Err("reuses a bitmap made for another grid".into());
+                        }
+                        Some(map)
+                    }
                     other => return Err(format!("predefined bitmap {other} isn't supported")),
                 });
             }
@@ -175,6 +187,9 @@ fn message(m: &[u8], out: &mut Vec<Field>) -> Result<(), String> {
                         "data before its identification, grid, product, packing or bitmap".into(),
                     );
                 };
+                *budget = budget
+                    .checked_sub(g.len())
+                    .ok_or("too many values to decode in one file")?;
                 let values = unpack(&s[5..], &k, g.len(), map.as_deref())?;
                 out.push(Field {
                     discipline,
@@ -237,9 +252,13 @@ fn grid_section(s: &[u8]) -> Result<Grid, String> {
         return Err(format!("scanning mode {scan:#04x} isn't supported"));
     }
     let points = be(&s[6..10]) as usize;
+    let (nx, ny) = (be(&s[30..34]) as usize, be(&s[34..38]) as usize);
+    if nx.checked_mul(ny).is_none_or(|n| n > MAX_POINTS) {
+        return Err(format!("a {nx}×{ny} grid has too many points"));
+    }
     let grid = Grid::lambert(Lambert {
-        nx: be(&s[30..34]) as usize,
-        ny: be(&s[34..38]) as usize,
+        nx,
+        ny,
         la1: micro(&s[38..42]),
         lo1: lon(&s[42..46]),
         lad: micro(&s[47..51]),
@@ -347,6 +366,9 @@ fn unpack(
     let r = f64::from(k.reference);
     let e = 2f64.powi(k.binary);
     let d = 10f64.powi(-k.decimal);
+    if !(e.is_finite() && d.is_finite()) {
+        return Err("scale factors overflow".into());
+    }
     let mut bit = 0u64;
     let mut next = || {
         if k.bits == 0 {
@@ -363,13 +385,24 @@ fn unpack(
         bit += u64::from(k.bits);
         ((r + x as f64 * e) * d) as f32
     };
-    Ok(match bitmap {
+    let values: Vec<f32> = match bitmap {
         None => (0..points).map(|_| next()).collect(),
         Some(map) => map
             .iter()
             .map(|&kept| if kept { next() } else { f32::NAN })
             .collect(),
-    })
+    };
+    // Only the bitmap's gaps may be missing: a value too big for f32 means
+    // a broken file, not a gap.
+    let kept = |i: usize| bitmap.is_none_or(|m| m[i]);
+    if values
+        .iter()
+        .enumerate()
+        .any(|(i, v)| kept(i) && !v.is_finite())
+    {
+        return Err("values overflow".into());
+    }
+    Ok(values)
 }
 
 #[cfg(test)]
@@ -424,5 +457,154 @@ mod tests {
         let mut edition1 = b"GRIB\0\0\0\x01".to_vec();
         edition1.extend([0; 12]);
         assert!(parse(&edition1).unwrap_err().contains("edition 1"));
+    }
+
+    // Messages built by hand: HRRR's grid cut to nx×ny, a 10 m wind field.
+    fn section(number: u8, body: &[u8]) -> Vec<u8> {
+        let mut s = ((body.len() + 5) as u32).to_be_bytes().to_vec();
+        s.push(number);
+        s.extend(body);
+        s
+    }
+
+    fn identification() -> Vec<u8> {
+        section(1, &[0, 7, 0, 0, 2, 1, 1, 0x07, 0xea, 9, 14, 3, 0, 0, 0, 1])
+    }
+
+    fn lambert(nx: u32, ny: u32) -> Vec<u8> {
+        let mut b = vec![0];
+        b.extend(nx.wrapping_mul(ny).to_be_bytes());
+        b.extend([0, 0, 0, 30, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        for v in [nx, ny, 36_364_046, 236_364_977] {
+            b.extend(v.to_be_bytes());
+        }
+        b.push(0x08);
+        for v in [38_500_000u32, 262_500_000, 3_000_000, 3_000_000] {
+            b.extend(v.to_be_bytes());
+        }
+        b.extend([0, 0x40]);
+        for v in [38_500_000u32, 38_500_000, 0, 0] {
+            b.extend(v.to_be_bytes());
+        }
+        section(3, &b)
+    }
+
+    fn product() -> Vec<u8> {
+        section(
+            4,
+            &[
+                0, 0, 0, 0, 2, 2, 2, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1, 103, 0, 0, 0, 0, 10, 255, 0, 0,
+                0, 0, 0,
+            ],
+        )
+    }
+
+    fn simple(count: u32, r: f32, e: [u8; 2], d: [u8; 2], bits: u8) -> Vec<u8> {
+        let mut b = count.to_be_bytes().to_vec();
+        b.extend([0, 0]);
+        b.extend(r.to_bits().to_be_bytes());
+        b.extend(e);
+        b.extend(d);
+        b.extend([bits, 0]);
+        section(5, &b)
+    }
+
+    fn bitmap(indicator: u8, bits: &[u8]) -> Vec<u8> {
+        let mut b = vec![indicator];
+        b.extend(bits);
+        section(6, &b)
+    }
+
+    fn wrap(sections: &[Vec<u8>]) -> Vec<u8> {
+        let body: Vec<u8> = sections.concat().into_iter().chain(*b"7777").collect();
+        let mut m = b"GRIB\0\0\0\x02".to_vec();
+        m.extend((16 + body.len() as u64).to_be_bytes());
+        m.extend(body);
+        m
+    }
+
+    #[test]
+    fn decodes_a_message_built_by_hand() {
+        let m = wrap(&[
+            identification(),
+            lambert(2, 2),
+            product(),
+            simple(4, 1.0, [0, 0], [0, 0], 8),
+            bitmap(255, &[]),
+            section(7, &[0, 1, 2, 3]),
+        ]);
+        let f = parse(&m).unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].values, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            (f[0].name().as_str(), f[0].level, f[0].lead),
+            ("UGRD", Some(10.0), 3600)
+        );
+        assert_eq!(f[0].reference, time::unix(2026, 9, 14, 3, 0, 0));
+    }
+
+    #[test]
+    fn refuses_a_grid_too_big_to_decode() {
+        // A couple of hundred bytes claiming 4.3 billion points of one value.
+        let m = wrap(&[
+            identification(),
+            lambert(65_535, 65_535),
+            product(),
+            simple(65_535 * 65_535, 1.0, [0, 0], [0, 0], 0),
+            bitmap(255, &[]),
+            section(7, &[]),
+        ]);
+        assert!(parse(&m).unwrap_err().contains("too many points"));
+    }
+
+    #[test]
+    fn refuses_too_many_values_in_one_file() {
+        let mut sections = vec![identification()];
+        for _ in 0..5 {
+            sections.extend([
+                lambert(2000, 2000),
+                product(),
+                simple(4_000_000, 1.0, [0, 0], [0, 0], 0),
+                bitmap(255, &[]),
+                section(7, &[]),
+            ]);
+        }
+        assert!(
+            parse(&wrap(&sections))
+                .unwrap_err()
+                .contains("too many values")
+        );
+    }
+
+    #[test]
+    fn refuses_a_bitmap_reused_for_another_grid() {
+        let m = wrap(&[
+            identification(),
+            lambert(2, 2),
+            product(),
+            simple(4, 1.0, [0, 0], [0, 0], 8),
+            bitmap(0, &[0xf0]),
+            section(7, &[0, 1, 2, 3]),
+            lambert(3, 3),
+            product(),
+            simple(4, 1.0, [0, 0], [0, 0], 8),
+            bitmap(254, &[]),
+            section(7, &[0, 1, 2, 3]),
+        ]);
+        assert!(parse(&m).unwrap_err().contains("another grid"));
+    }
+
+    #[test]
+    fn refuses_values_that_overflow() {
+        // D = -32767: every value times 10^32767.
+        let m = wrap(&[
+            identification(),
+            lambert(2, 2),
+            product(),
+            simple(4, 1.0, [0, 0], [0xff, 0xff], 0),
+            bitmap(255, &[]),
+            section(7, &[]),
+        ]);
+        assert!(parse(&m).unwrap_err().contains("overflow"));
     }
 }
