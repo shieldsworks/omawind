@@ -439,11 +439,14 @@ pub async fn run(config: Config) -> io::Result<()> {
         )
     });
     // The thread stops once this is dropped, when the engine ends.
-    let _stations = wind
-        .config
-        .stations
-        .clone()
-        .map(|source| spawn_stations(wind.config.cache.clone(), source, tx.clone()));
+    let _stations = wind.config.stations.clone().map(|source| {
+        spawn_stations(
+            wind.config.cache.clone(),
+            source,
+            tx.clone(),
+            wind.config.clock,
+        )
+    });
 
     let mut clients: Vec<Client> = Vec::new();
     let mut next_id: u64 = 1;
@@ -566,6 +569,7 @@ fn spawn_stations(
     cache: PathBuf,
     source: obs::Source,
     tx: mpsc::Sender<Event>,
+    clock: fn() -> i64,
 ) -> std_mpsc::Sender<()> {
     let (alive, rx) = std_mpsc::channel::<()>();
     std::thread::spawn(move || {
@@ -583,7 +587,7 @@ fn spawn_stations(
                 }
             }
             if tx
-                .blocking_send(Event::Stations(obs::latest(&source, &names)))
+                .blocking_send(Event::Stations(obs::latest(&source, &names, clock())))
                 .is_err()
             {
                 return;

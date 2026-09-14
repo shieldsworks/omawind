@@ -62,9 +62,10 @@ pub struct Station {
 
 /// Each station's newest report in `latest_obs.txt`, by id, with a wind to
 /// draw or not. Columns are found by the header's names. A row that doesn't
-/// read is left out. A file with no row that reads is an error, not an
-/// empty Bay, so the last good reports stay.
-pub fn parse_latest(text: &str) -> Result<Vec<Report>, String> {
+/// read is left out, and so is one dated ahead of `now`, before the newest
+/// is chosen, so it can't hide a true one. A file with no row that reads is
+/// an error, not an empty Bay, so the last good reports stay.
+pub fn parse_latest(text: &str, now: i64) -> Result<Vec<Report>, String> {
     let header = text
         .lines()
         .find(|l| l.starts_with("#STN"))
@@ -90,7 +91,7 @@ pub fn parse_latest(text: &str) -> Result<Vec<Report>, String> {
         if !whole {
             continue;
         }
-        let Some(r) = report(&fields, &cols) else {
+        let Some(r) = report(&fields, &cols).filter(|r| r.time <= now + AHEAD) else {
             continue;
         };
         read += 1;
@@ -242,10 +243,28 @@ pub fn names(cache: &Path, source: &Source) -> Result<HashMap<String, String>, S
         if n.is_empty() {
             return Err(format!("{}: no station names in it", source.names));
         }
-        save(&file, &bytes);
         Ok(n)
     });
-    fetched.or_else(|e| kept().ok_or(e))
+    match fetched {
+        // Folded into what's kept, so a table cut short can't forget the
+        // names it lost; a station renamed takes its new name.
+        Ok(n) => {
+            let mut all = kept().unwrap_or_default();
+            all.extend(n);
+            save(&file, table(&all).as_bytes());
+            Ok(all)
+        }
+        Err(e) => kept().ok_or(e),
+    }
+}
+
+/// Names written back the way `parse_names` reads them, in id order.
+fn table(names: &HashMap<String, String>) -> String {
+    let mut ids: Vec<&String> = names.keys().collect();
+    ids.sort();
+    ids.into_iter()
+        .map(|id| format!("{id}||||{}\n", names[id]))
+        .collect()
 }
 
 /// Written to a file of its own beside it and renamed over, so a reader
@@ -274,9 +293,13 @@ fn save(file: &Path, bytes: &[u8]) {
 }
 
 /// Every station's latest report, named where the table names it.
-pub fn latest(source: &Source, names: &HashMap<String, String>) -> Result<Vec<Report>, String> {
+pub fn latest(
+    source: &Source,
+    names: &HashMap<String, String>,
+    now: i64,
+) -> Result<Vec<Report>, String> {
     let bytes = fetch::get(&source.latest, LIMIT)?;
-    let mut reports = parse_latest(&String::from_utf8_lossy(&bytes))?;
+    let mut reports = parse_latest(&String::from_utf8_lossy(&bytes), now)?;
     for s in reports.iter_mut().filter_map(|r| r.wind.as_mut()) {
         s.name = names.get(&s.id).cloned();
     }
@@ -316,6 +339,9 @@ mod tests {
     use super::*;
     use std::time::SystemTime;
 
+    /// 2026-09-14 17:30 UTC, the clock for every test here.
+    const NOW: i64 = 1_789_407_000;
+
     // Only the columns read, so a row of 11 is whole.
     const HEADER: &str = "\
 #STN       LAT      LON  YYYY MM DD hh mm WDIR WSPD   GST
@@ -328,7 +354,7 @@ mod tests {
     }
 
     fn parse(rows: &str) -> Vec<Station> {
-        winds(parse_latest(&format!("{HEADER}{rows}")).unwrap())
+        winds(parse_latest(&format!("{HEADER}{rows}"), NOW).unwrap())
     }
 
     fn ids(stations: &[Station]) -> Vec<&str> {
@@ -381,7 +407,7 @@ SHORT 37.000 -122.000 2026 09 14
             "AAMC1 37.772 -122.300 2026 09 14 17 00 120 -1 MM\n",
             "<html>\nnot a report\n</html>\n",
         ] {
-            let e = parse_latest(&format!("{HEADER}{body}")).unwrap_err();
+            let e = parse_latest(&format!("{HEADER}{body}"), NOW).unwrap_err();
             assert!(e.contains("no reports"), "{body:?}: {e}");
         }
         // A file whose stations all report no wind is still a good file.
@@ -404,12 +430,14 @@ SHORT 37.000 -122.000 2026 09 14
             "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  19.6    MM   MM     MM MM\n",
             "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  junk    MM   MM     MM\n",
         ] {
-            let e = parse_latest(&format!("{header}{body}")).unwrap_err();
+            let e = parse_latest(&format!("{header}{body}"), NOW).unwrap_err();
             assert!(e.contains("no reports"), "{body:?}: {e}");
         }
         let whole = "AAMC1    37.772 -122.300 2026 09 14 17 00 120   1.5   2.1   MM  MM   MM  MM 1014.5  +0.5  17.4  19.6    MM   MM     MM\n";
         assert_eq!(
-            ids(&winds(parse_latest(&format!("{header}{whole}")).unwrap())),
+            ids(&winds(
+                parse_latest(&format!("{header}{whole}"), NOW).unwrap()
+            )),
             ["AAMC1"]
         );
     }
@@ -435,15 +463,15 @@ PXOC1 37.798 -122.393 2026 09 14 17 00  MM 3.1 MM
     #[test]
     fn finds_columns_by_the_header() {
         let moved = "#STN LAT LON WSPD GST WDIR YYYY MM DD hh mm\nAAMC1 37.772 -122.300 1.5 MM 360 2026 09 14 17 00\n";
-        let s = winds(parse_latest(moved).unwrap());
+        let s = winds(parse_latest(moved, NOW).unwrap());
         assert_eq!(s[0].from_deg, Some(0.0));
         assert!(
-            parse_latest("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 2.1\n")
+            parse_latest("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 2.1\n", NOW)
                 .unwrap_err()
                 .contains("no header")
         );
         assert!(
-            parse_latest("#STN LAT LON YYYY MM DD hh mm WDIR GST\n")
+            parse_latest("#STN LAT LON YYYY MM DD hh mm WDIR GST\n", NOW)
                 .unwrap_err()
                 .contains("no WSPD column")
         );
@@ -451,14 +479,17 @@ PXOC1 37.798 -122.393 2026 09 14 17 00  MM 3.1 MM
 
     #[test]
     fn shows_the_regions_recent_reports() {
-        let r = parse_latest(&format!(
-            "{HEADER}\
+        let r = parse_latest(
+            &format!(
+                "{HEADER}\
 AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM
 OLD01 37.772 -122.300 2026 09 14 15 00 120 1.5 MM
 AHEAD 37.772 -122.300 2026 09 14 18 00 120 1.5 MM
 51201 21.673 -158.116 2026 09 14 17 00 120 1.5 MM
 "
-        ))
+            ),
+            NOW,
+        )
         .unwrap();
         let now = time::unix(2026, 9, 14, 17, 30, 0);
         let shown: Vec<&str> = current(&r, Region::BAY, now)
@@ -470,7 +501,7 @@ AHEAD 37.772 -122.300 2026 09 14 18 00 120 1.5 MM
     #[test]
     fn a_fetch_cut_short_keeps_the_stations_it_missed() {
         let now = time::unix(2026, 9, 14, 17, 30, 0);
-        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}")).unwrap();
+        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}"), NOW).unwrap();
         let shown = |kept: &BTreeMap<String, Report>| -> Vec<(String, Option<f64>)> {
             current(kept.values(), Region::BAY, now)
                 .map(|s| (s.id.clone(), s.from_deg))
@@ -518,7 +549,7 @@ RCMC1 37.923 -122.410 2026 09 14 17 00 160 2.1 MM
     #[test]
     fn broken_or_future_reports_dont_displace_a_good_one() {
         let now = time::unix(2026, 9, 14, 17, 30, 0);
-        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}")).unwrap_or_default();
+        let fetch = |rows: &str| parse_latest(&format!("{HEADER}{rows}"), NOW).unwrap_or_default();
         let from = |kept: &BTreeMap<String, Report>| -> Vec<Option<f64>> {
             current(kept.values(), Region::BAY, now)
                 .map(|s| s.from_deg)
@@ -551,6 +582,18 @@ RCMC1 37.923 -122.410 2026 09 14 17 00 160 2.1 MM
             now,
         );
         assert_eq!(from(&kept), [Some(140.0)]);
+    }
+
+    #[test]
+    fn a_future_row_doesnt_hide_todays_in_the_same_file() {
+        assert_eq!(NOW, time::unix(2026, 9, 14, 17, 30, 0));
+        let today = "AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM\n";
+        let future = "AAMC1 37.772 -122.300 2099 09 14 17 00 200 1.5 MM\n";
+        for rows in [format!("{today}{future}"), format!("{future}{today}")] {
+            assert_eq!(parse(&rows)[0].from_deg, Some(120.0), "{rows:?}");
+        }
+        // A file of nothing but future rows has no reports in it.
+        assert!(parse_latest(&format!("{HEADER}{future}"), NOW).is_err());
     }
 
     #[test]
@@ -624,8 +667,15 @@ short|N
         assert_eq!(names(&cache, &from(&gone)).unwrap()["AAMC1"], "Alameda");
         // After it, it is.
         age(&cache);
+        // A table cut short to one station adds its name and forgets none.
         fs::write(&table, "rcmc1|PT|||9414863 - Richmond, CA||\n").unwrap();
-        assert_eq!(names(&cache, &from(&table)).unwrap()["RCMC1"], "Richmond");
+        let n = names(&cache, &from(&table)).unwrap();
+        assert_eq!(
+            (n["RCMC1"].as_str(), n["AAMC1"].as_str()),
+            ("Richmond", "Alameda")
+        );
+        let kept = parse_names(&fs::read_to_string(names_file(&cache)).unwrap());
+        assert_eq!(kept, n);
         // And when it can't answer, the old copy stands in.
         age(&cache);
         assert_eq!(names(&cache, &from(&gone)).unwrap()["RCMC1"], "Richmond");

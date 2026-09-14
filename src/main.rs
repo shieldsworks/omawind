@@ -186,8 +186,9 @@ fn stations() -> Result<(), String> {
         eprintln!("omawind: station names: {e}");
         HashMap::new()
     });
-    let all = obs::latest(&source, &names)?;
-    let shown: Vec<&obs::Station> = obs::current(&all, s.region, time::now()).collect();
+    let now = time::now();
+    let all = obs::latest(&source, &names, now)?;
+    let shown: Vec<&obs::Station> = obs::current(&all, s.region, now).collect();
     if shown.is_empty() {
         return Err("no station in the region has reported wind in the last 2 hours".into());
     }
