@@ -638,38 +638,43 @@ OBXC1    37.804 -122.341 2026 09 14 17 00  MM    MM    MM   MM  MM   MM  MM 1014
     #[test]
     fn the_tendency_ages_out_with_no_fetch_getting_through() {
         let header = "#STN LAT LON YYYY MM DD hh mm WDIR WSPD GST PRES PTDY\n";
-        let on_the_hour = time::unix(2026, 9, 14, 17, 0, 0);
+        let at = |h: u32, m: u32| time::unix(2026, 9, 14, h, m, 0);
+        let fetch = |row: &str, now: i64| parse_latest(&format!("{header}{row}"), now).unwrap();
         let mut kept = BTreeMap::new();
+        // The hour's report, with its tendency, fetched at 17:30.
         merge(
             &mut kept,
-            parse_latest(
-                &format!("{header}AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM 1014.5 -1.2\n"),
-                NOW,
-            )
-            .unwrap(),
-            NOW,
+            fetch(
+                "AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM 1014.5 -1.2\n",
+                at(17, 30),
+            ),
+            at(17, 30),
         );
-        // No merge after this: every fetch is failing. What's sent is asked
-        // at the clock of the sending.
-        let sent = |now: i64| {
+        // A later report without one, fetched at 19:58: it carries the
+        // 17:00 tendency on, still under 3 hours old.
+        merge(
+            &mut kept,
+            fetch(
+                "AAMC1 37.772 -122.300 2026 09 14 19 54 130 2.0 MM 1014.0 MM\n",
+                at(19, 58),
+            ),
+            at(19, 58),
+        );
+        // No merge after this: every fetch is failing. What goes out is
+        // judged at the clock of the sending: each station shown, with its
+        // tendency if it has one still in date.
+        let sent = |now: i64| -> Vec<(i64, Option<f64>)> {
             current(kept.values(), Region::BAY, now)
-                .map(|s| s.tendency_at(now).map(|t| t.hpa))
-                .collect::<Vec<_>>()
+                .map(|s| (s.time, s.tendency_at(now).map(|t| t.hpa)))
+                .collect()
         };
-        assert_eq!(
-            sent(on_the_hour + 3 * time::HOUR - 60),
-            [] as [Option<f64>; 0]
-        );
-        let s = kept["AAMC1"].wind.as_ref().unwrap();
-        assert_eq!(
-            s.tendency_at(on_the_hour + 3 * time::HOUR - 1)
-                .map(|t| t.hpa),
-            Some(-1.2)
-        );
-        assert_eq!(s.tendency_at(on_the_hour + 3 * time::HOUR), None);
-        assert_eq!(s.tendency_at(on_the_hour + 4 * time::HOUR + 48 * 60), None);
-        // While the wind is still shown, it goes out without the tendency.
-        assert_eq!(sent(on_the_hour + 90 * 60), [Some(-1.2)]);
+        assert_eq!(sent(at(19, 59)), [(at(19, 54), Some(-1.2))]);
+        assert_eq!(sent(at(20, 0) - 1), [(at(19, 54), Some(-1.2))]);
+        // 20:00 is 3 hours after the tendency's own report: it's gone,
+        // though the 19:54 wind is still shown.
+        assert_eq!(sent(at(20, 0)), [(at(19, 54), None)]);
+        // 21:48: the wind under 2 hours old goes out, without a tendency.
+        assert_eq!(sent(at(21, 48)), [(at(19, 54), None)]);
     }
 
     #[test]
