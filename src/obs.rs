@@ -42,6 +42,13 @@ const KNOTS: f64 = 3600.0 / 1852.0;
 const COLUMNS: [&str; 11] = [
     "STN", "LAT", "LON", "YYYY", "MM", "DD", "hh", "mm", "WDIR", "WSPD", "GST",
 ];
+/// Read when the header has them, and not missed when it doesn't: the
+/// barometer is extra to a wind report, never a reason to drop one.
+const PRESSURE_COLUMNS: [&str; 2] = ["PRES", "PTDY"];
+/// A barometer at sea level reads inside this, hPa; outside it is a fault.
+const PRESSURE_RANGE: std::ops::RangeInclusive<f64> = 850.0..=1100.0;
+/// A three-hour change past this is a fault too.
+const TENDENCY_RANGE: std::ops::RangeInclusive<f64> = -30.0..=30.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Station {
@@ -58,6 +65,11 @@ pub struct Station {
     /// Where it blows from, degrees true. None only in a calm.
     pub from_deg: Option<f64>,
     pub gust_kn: Option<f64>,
+    /// The barometer at sea level, hPa, when the station has one.
+    pub pressure_hpa: Option<f64>,
+    /// NDBC's PTDY: how far the barometer moved in the last 3 hours, hPa,
+    /// falling negative.
+    pub tendency_hpa: Option<f64>,
 }
 
 /// Each station's newest report in `latest_obs.txt`, by id, with a wind to
@@ -78,6 +90,7 @@ pub fn parse_latest(text: &str, now: i64) -> Result<Vec<Report>, String> {
             .position(|&h| h == name)
             .ok_or_else(|| format!("latest_obs.txt: no {name} column"))?;
     }
+    let pressure_cols = PRESSURE_COLUMNS.map(|name| heads.iter().position(|&h| h == name));
     let mut newest: HashMap<String, Report> = HashMap::new();
     let mut read = 0;
     for line in text.lines().filter(|l| !l.starts_with('#')) {
@@ -91,7 +104,8 @@ pub fn parse_latest(text: &str, now: i64) -> Result<Vec<Report>, String> {
         if !whole {
             continue;
         }
-        let Some(r) = report(&fields, &cols).filter(|r| r.time <= now + AHEAD) else {
+        let Some(r) = report(&fields, &cols, pressure_cols).filter(|r| r.time <= now + AHEAD)
+        else {
             continue;
         };
         read += 1;
@@ -120,7 +134,11 @@ pub struct Report {
 
 /// None for a row that doesn't read. The row has been checked to be whole,
 /// each value a number or NDBC's missing value, `MM`.
-fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
+fn report(
+    f: &[&str],
+    cols: &[usize; COLUMNS.len()],
+    [pres, ptdy]: [Option<usize>; PRESSURE_COLUMNS.len()],
+) -> Option<Report> {
     let [
         stn,
         lat,
@@ -158,6 +176,14 @@ fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
     if !in_range(wspd, 100.0) || !in_range(wdir, 360.0) {
         return None;
     }
+    // A barometer out of range is left off, and the wind stands: the two
+    // are separate instruments.
+    let reading = |col: Option<usize>, range: &std::ops::RangeInclusive<f64>| {
+        col.and_then(|i| value(i).flatten())
+            .filter(|v| range.contains(v))
+    };
+    let pressure_hpa = reading(pres, &PRESSURE_RANGE);
+    let tendency_hpa = reading(ptdy, &TENDENCY_RANGE);
     let id = id.to_ascii_uppercase();
     // No speed, or a speed without a direction: no barb to draw.
     let speed = wspd;
@@ -172,6 +198,8 @@ fn report(f: &[&str], cols: &[usize; COLUMNS.len()]) -> Option<Report> {
             speed_kn: s * KNOTS,
             from_deg,
             gust_kn: gst.filter(|v| (0.0..=150.0).contains(v)).map(|g| g * KNOTS),
+            pressure_hpa,
+            tendency_hpa,
         }),
         _ => None,
     };
@@ -440,6 +468,45 @@ SHORT 37.000 -122.000 2026 09 14
             )),
             ["AAMC1"]
         );
+    }
+
+    #[test]
+    fn reads_the_barometer_where_there_is_one() {
+        // NDBC's whole header, and rows as it sent them on 2026-09-26.
+        let header = "\
+#STN       LAT      LON  YYYY MM DD hh mm WDIR WSPD   GST WVHT  DPD APD MWD   PRES  PTDY  ATMP  WTMP  DEWP  VIS   TIDE
+#text      deg      deg   yr mo day hr mn degT  m/s   m/s   m   sec sec degT   hPa   hPa  degC  degC  degC  nmi     ft
+";
+        let rows = "\
+AAMC1    37.772 -122.300 2026 09 14 17 00 240   1.0   1.0   MM  MM   MM  MM 1014.8  +0.5  15.1  19.1    MM   MM     MM
+FTPC1    37.806 -122.466 2026 09 14 17 00 200   1.5   3.6   MM  MM   MM  MM 1014.7  -1.6  14.3    MM    MM   MM     MM
+OMHC1    37.801 -122.330 2026 09 14 17 00 210   2.6   3.6   MM  MM   MM  MM     MM    MM    MM    MM    MM   MM     MM
+SFXC1    38.200 -122.026 2026 09 14 16 45 270   4.1    MM   MM  MM   MM  MM 1013.0    MM  17.6    MM  12.8   MM     MM
+BADP1    37.000 -122.000 2026 09 14 17 00 120   1.5    MM   MM  MM   MM  MM 1500.0  99.0    MM    MM    MM   MM     MM
+OBXC1    37.804 -122.341 2026 09 14 17 00  MM    MM    MM   MM  MM   MM  MM 1014.0  +0.1  15.1    MM  14.0  5.9     MM
+";
+        let s = winds(parse_latest(&format!("{header}{rows}"), NOW).unwrap());
+        let got: Vec<(&str, Option<f64>, Option<f64>)> = s
+            .iter()
+            .map(|s| (s.id.as_str(), s.pressure_hpa, s.tendency_hpa))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("AAMC1", Some(1014.8), Some(0.5)),
+                ("BADP1", None, None),
+                // Falling is negative.
+                ("FTPC1", Some(1014.7), Some(-1.6)),
+                ("OMHC1", None, None),
+                // A barometer with no tendency yet.
+                ("SFXC1", Some(1013.0), None),
+            ]
+        );
+        // A barometer with no wind isn't a station to list.
+        assert!(!s.iter().any(|s| s.id == "OBXC1"));
+        // Without the columns, the wind is read as ever.
+        let s = parse("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM\n");
+        assert_eq!((s[0].pressure_hpa, s[0].tendency_hpa), (None, None));
     }
 
     #[test]

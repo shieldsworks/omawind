@@ -333,15 +333,19 @@ async fn an_app_sees_the_wind_the_stations_measured() {
             "PCOC1", "PSBC1", "PXOC1", "RCMC1", "RTYC1", "SFXC1", "UPBC1"
         ]
     );
-    // 120° at 1.5 m/s, gusting 2.1.
+    // 120° at 1.5 m/s, gusting 2.1, the barometer 1014.5 and up 0.5 in
+    // 3 hours.
     assert_eq!(
         list[3],
         json!({"id": "AAMC1", "name": "Alameda", "lat": 37.772, "lon": -122.3,
-               "time": "2026-09-14T17:00:00Z", "speedKn": 2.9, "dirDeg": 120, "gustKn": 4.1})
+               "time": "2026-09-14T17:00:00Z", "speedKn": 2.9, "dirDeg": 120, "gustKn": 4.1,
+               "pressureHpa": 1014.5, "tendencyHpa": 0.5})
     );
     assert_eq!(list[4]["name"], "San Francisco");
-    // Suisun Bay reports no gust.
+    // Suisun Bay reports no gust, and a barometer with no tendency.
     assert!(list[14].get("gustKn").is_none());
+    assert_eq!(list[14]["pressureHpa"], 1013.0);
+    assert!(list[14].get("tendencyHpa").is_none());
     assert!(obs::names_file(&dir.join("cache")).exists());
     wind.abort();
     let _ = std::fs::remove_dir_all(&dir);

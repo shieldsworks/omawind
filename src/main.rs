@@ -193,20 +193,22 @@ fn stations() -> Result<(), String> {
         return Err("no station in the region has reported wind in the last 2 hours".into());
     }
     println!(
-        "{:<7} {:<26} {:>5} {:>5} {:>6} {:>6}",
-        "NDBC", "", "UTC", "from", "kn", "gust"
+        "{:<7} {:<26} {:>5} {:>5} {:>6} {:>6} {:>7} {:>5}",
+        "NDBC", "", "UTC", "from", "kn", "gust", "hPa", "3 h"
     );
     for st in shown {
         let name: String = st.name.as_deref().unwrap_or("").chars().take(26).collect();
         let opt = |v: Option<f64>, f: &dyn Fn(f64) -> String| v.map_or("-".into(), f);
         println!(
-            "{:<7} {:<26} {:>5} {:>5} {:>6.1} {:>6}",
+            "{:<7} {:<26} {:>5} {:>5} {:>6.1} {:>6} {:>7} {:>5}",
             st.id,
             name,
             &time::iso(st.time)[11..16],
             opt(st.from_deg, &|d| format!("{}°", d.round() as i64 % 360)),
             st.speed_kn,
-            opt(st.gust_kn, &|g| format!("{g:.1}"))
+            opt(st.gust_kn, &|g| format!("{g:.1}")),
+            opt(st.pressure_hpa, &|p| format!("{p:.1}")),
+            opt(st.tendency_hpa, &|t| format!("{t:+.1}"))
         );
     }
     Ok(())
