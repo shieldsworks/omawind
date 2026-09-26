@@ -273,7 +273,7 @@ impl Wind {
                 if let Some(p) = s.pressure_hpa {
                     m.insert("pressureHpa".into(), json!(round(p, 1)));
                 }
-                if let Some(t) = s.tendency {
+                if let Some(t) = s.tendency_at(now) {
                     // Plus zero, so a steady glass isn't sent as -0.0.
                     m.insert("tendencyHpa".into(), json!(round(t.hpa, 1) + 0.0));
                     m.insert("tendencyTime".into(), json!(time::iso(t.time)));

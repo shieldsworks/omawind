@@ -75,6 +75,15 @@ pub struct Station {
     pub tendency: Option<Tendency>,
 }
 
+impl Station {
+    /// The tendency if it's still under `TENDENCY_KEPT` old at `now`. Asked
+    /// where it's sent, not only when a fetch arrives: offshore, with no
+    /// fetch getting through, the last one would otherwise go on for hours.
+    pub fn tendency_at(&self, now: i64) -> Option<Tendency> {
+        self.tendency.filter(|t| t.time > now - TENDENCY_KEPT)
+    }
+}
+
 /// NDBC's PTDY: how far the barometer moved in the 3 hours to `time`, hPa,
 /// falling negative. NDBC sends it on the hour's report and `MM` on the
 /// others, so it carries its own report's time and is never the wind's.
@@ -624,6 +633,43 @@ OBXC1    37.804 -122.341 2026 09 14 17 00  MM    MM    MM   MM  MM   MM  MM 1014
         assert!(kept["AAMC1"].wind.is_some());
         assert_eq!(tendency(&kept), None);
         assert_eq!(kept["AAMC1"].tendency, None);
+    }
+
+    #[test]
+    fn the_tendency_ages_out_with_no_fetch_getting_through() {
+        let header = "#STN LAT LON YYYY MM DD hh mm WDIR WSPD GST PRES PTDY\n";
+        let on_the_hour = time::unix(2026, 9, 14, 17, 0, 0);
+        let mut kept = BTreeMap::new();
+        merge(
+            &mut kept,
+            parse_latest(
+                &format!("{header}AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM 1014.5 -1.2\n"),
+                NOW,
+            )
+            .unwrap(),
+            NOW,
+        );
+        // No merge after this: every fetch is failing. What's sent is asked
+        // at the clock of the sending.
+        let sent = |now: i64| {
+            current(kept.values(), Region::BAY, now)
+                .map(|s| s.tendency_at(now).map(|t| t.hpa))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            sent(on_the_hour + 3 * time::HOUR - 60),
+            [] as [Option<f64>; 0]
+        );
+        let s = kept["AAMC1"].wind.as_ref().unwrap();
+        assert_eq!(
+            s.tendency_at(on_the_hour + 3 * time::HOUR - 1)
+                .map(|t| t.hpa),
+            Some(-1.2)
+        );
+        assert_eq!(s.tendency_at(on_the_hour + 3 * time::HOUR), None);
+        assert_eq!(s.tendency_at(on_the_hour + 4 * time::HOUR + 48 * 60), None);
+        // While the wind is still shown, it goes out without the tendency.
+        assert_eq!(sent(on_the_hour + 90 * 60), [Some(-1.2)]);
     }
 
     #[test]

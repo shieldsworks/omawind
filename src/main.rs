@@ -211,7 +211,9 @@ fn stations() -> Result<(), String> {
             opt(st.gust_kn, &|g| format!("{g:.1}")),
             opt(st.pressure_hpa, &|p| format!("{p:.1}")),
             // Plus zero, so a steady glass isn't printed -0.0.
-            opt(st.tendency.map(|t| t.hpa + 0.0), &|t| format!("{t:+.1}"))
+            opt(st.tendency_at(now).map(|t| t.hpa + 0.0), &|t| format!(
+                "{t:+.1}"
+            ))
         );
     }
     Ok(())
