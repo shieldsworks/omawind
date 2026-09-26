@@ -109,7 +109,8 @@ replace their copy.
 ```json
 {"type":"stations","v":1,"source":"NDBC","status":"ok","checked":"2026-09-14T17:50:00Z",
  "stations":[{"id":"AAMC1","name":"Alameda","lat":37.772,"lon":-122.3,
-              "time":"2026-09-14T17:00:00Z","speedKn":2.9,"dirDeg":120,"gustKn":4.1}]}
+              "time":"2026-09-14T17:00:00Z","speedKn":2.9,"dirDeg":120,"gustKn":4.1,
+              "pressureHpa":1014.5,"tendencyHpa":0.5,"tendencyTime":"2026-09-14T17:00:00Z"}]}
 ```
 
 - `source` is `NDBC`, NOAA's National Data Buoy Center. The engine reads its
@@ -125,6 +126,18 @@ replace their copy.
   knots, and `dirDeg` where it blows from, degrees true, 0 to 359, left out
   only in a calm. `gustKn` is the gust, when reported. Stations that report no
   wind, or a speed without a direction, aren't listed.
+- `pressureHpa` is the station's barometer at sea level, hectopascals, from
+  the same report as the wind. It's left out when the report has none, or
+  one outside 850 to 1100 hPa, which is a fault rather than weather.
+- `tendencyHpa` is NDBC's PTDY: how far the barometer moved in the 3 hours
+  to `tendencyTime`, hectopascals, negative when falling. NDBC sends it on
+  a station's report on the hour and not on the reports between, so it is
+  the last hour's, kept across those reports, and `tendencyTime` is when
+  that report was taken, which is often earlier than `time`. It's dropped
+  once `tendencyTime` is 3 hours old, and left out when it's outside
+  ±30 hPa. Never read it as belonging to the wind.
+- A station with a barometer and no wind isn't listed. Which stations have
+  a barometer, and which send a tendency, is up to NDBC and changes.
 - A station's anemometer may not be 10 m up, and a pier's may be sheltered:
   its wind is what it measured, not what `field` would say there.
 
