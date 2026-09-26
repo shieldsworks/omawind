@@ -339,7 +339,7 @@ async fn an_app_sees_the_wind_the_stations_measured() {
         list[3],
         json!({"id": "AAMC1", "name": "Alameda", "lat": 37.772, "lon": -122.3,
                "time": "2026-09-14T17:00:00Z", "speedKn": 2.9, "dirDeg": 120, "gustKn": 4.1,
-               "pressureHpa": 1014.5, "tendencyHpa": 0.5})
+               "pressureHpa": 1014.5, "tendencyHpa": 0.5, "tendencyTime": "2026-09-14T17:00:00Z"})
     );
     assert_eq!(list[4]["name"], "San Francisco");
     // Suisun Bay reports no gust, and a barometer with no tendency.

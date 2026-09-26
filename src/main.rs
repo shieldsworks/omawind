@@ -17,7 +17,9 @@ run       serve the forecast, the wind at the boat and the stations' measured
           and omakeel's to $XDG_RUNTIME_DIR/omakeel/keel.sock.
 fetch     download the newest HRRR run for the region now.
 at        print the cached forecast at a position, or at home.
-stations  print the wind the region's stations measured, from NDBC.
+stations  print the wind the region's stations measured, from NDBC, and
+          their barometers. One fetch: the 3-hour change shows only where
+          a station's latest report is the hour's.
 decode    list the fields in a GRIB2 file.
 
 Settings: ~/.config/omawind/config.toml (region, home).";
@@ -208,7 +210,8 @@ fn stations() -> Result<(), String> {
             st.speed_kn,
             opt(st.gust_kn, &|g| format!("{g:.1}")),
             opt(st.pressure_hpa, &|p| format!("{p:.1}")),
-            opt(st.tendency_hpa, &|t| format!("{t:+.1}"))
+            // Plus zero, so a steady glass isn't printed -0.0.
+            opt(st.tendency.map(|t| t.hpa + 0.0), &|t| format!("{t:+.1}"))
         );
     }
     Ok(())

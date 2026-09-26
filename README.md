@@ -29,7 +29,8 @@ the wind NOAA's stations there measured, and shows the forecast in the bar.
   minutes: the buoys offshore, and around the Bay the piers and tide gauges
   of NOAA's PORTS program. It's the National Data Buoy Center's plain-text
   latest reports, read from scratch, named from its station table. Where a
-  station has a barometer, its pressure and the last 3 hours' change come too.
+  station has a barometer, its pressure comes too, and the 3-hour change
+  NDBC works out on the hour, kept with that hour's time.
 - Serves all of that, and wind fields for the chart, over a Unix socket as
   newline-delimited JSON ([docs/protocol.md](docs/protocol.md)).
 - The bar shows it like `WSW 14G19 kn`, in the theme's urgent color at 21

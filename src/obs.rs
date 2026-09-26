@@ -49,6 +49,9 @@ const PRESSURE_COLUMNS: [&str; 2] = ["PRES", "PTDY"];
 const PRESSURE_RANGE: std::ops::RangeInclusive<f64> = 850.0..=1100.0;
 /// A three-hour change past this is a fault too.
 const TENDENCY_RANGE: std::ops::RangeInclusive<f64> = -30.0..=30.0;
+/// NDBC sends PTDY on the hour's report only; it's kept across the reports
+/// between, and let go once it's older than the change it measures.
+pub const TENDENCY_KEPT: i64 = 3 * time::HOUR;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Station {
@@ -67,9 +70,18 @@ pub struct Station {
     pub gust_kn: Option<f64>,
     /// The barometer at sea level, hPa, when the station has one.
     pub pressure_hpa: Option<f64>,
-    /// NDBC's PTDY: how far the barometer moved in the last 3 hours, hPa,
-    /// falling negative.
-    pub tendency_hpa: Option<f64>,
+    /// The last tendency the station sent, which may be from an earlier
+    /// report than the wind's: see `Tendency`.
+    pub tendency: Option<Tendency>,
+}
+
+/// NDBC's PTDY: how far the barometer moved in the 3 hours to `time`, hPa,
+/// falling negative. NDBC sends it on the hour's report and `MM` on the
+/// others, so it carries its own report's time and is never the wind's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Tendency {
+    pub hpa: f64,
+    pub time: i64,
 }
 
 /// Each station's newest report in `latest_obs.txt`, by id, with a wind to
@@ -130,6 +142,9 @@ pub struct Report {
     pub id: String,
     pub time: i64,
     pub wind: Option<Station>,
+    /// Kept here as well as on the wind, so a report without a wind to draw
+    /// can still hand the last tendency on to the next.
+    pub tendency: Option<Tendency>,
 }
 
 /// None for a row that doesn't read. The row has been checked to be whole,
@@ -183,7 +198,7 @@ fn report(
             .filter(|v| range.contains(v))
     };
     let pressure_hpa = reading(pres, &PRESSURE_RANGE);
-    let tendency_hpa = reading(ptdy, &TENDENCY_RANGE);
+    let tendency = reading(ptdy, &TENDENCY_RANGE).map(|hpa| Tendency { hpa, time });
     let id = id.to_ascii_uppercase();
     // No speed, or a speed without a direction: no barb to draw.
     let speed = wspd;
@@ -199,11 +214,16 @@ fn report(
             from_deg,
             gust_kn: gst.filter(|v| (0.0..=150.0).contains(v)).map(|g| g * KNOTS),
             pressure_hpa,
-            tendency_hpa,
+            tendency,
         }),
         _ => None,
     };
-    Some(Report { id, time, wind })
+    Some(Report {
+        id,
+        time,
+        wind,
+        tendency,
+    })
 }
 
 /// NDBC's names by id, trimmed for a chart: `9414750 - Alameda, CA` is
@@ -338,13 +358,32 @@ pub fn latest(
 /// station the fetch left out keeps its last until that's too old to show,
 /// so a file cut short can't empty the Bay. A report dated ahead of the
 /// clock is never kept, or it would outrank every true one after it.
+///
+/// The tendency is the exception to newest-wins: NDBC sends it on the hour
+/// only, so a report without one keeps the last, with that report's time,
+/// until it's `TENDENCY_KEPT` old.
 pub fn merge(kept: &mut BTreeMap<String, Report>, fetched: Vec<Report>, now: i64) {
-    for r in fetched.into_iter().filter(|r| r.time <= now + AHEAD) {
-        if kept.get(&r.id).is_none_or(|old| old.time <= r.time) {
+    for mut r in fetched.into_iter().filter(|r| r.time <= now + AHEAD) {
+        let Some(old) = kept.get(&r.id) else {
             kept.insert(r.id.clone(), r);
+            continue;
+        };
+        if old.time > r.time {
+            continue;
         }
+        if r.tendency.is_none() {
+            r.tendency = old.tendency;
+        }
+        kept.insert(r.id.clone(), r);
     }
     kept.retain(|_, r| r.time > now - MAX_AGE && r.time <= now + AHEAD);
+    for r in kept.values_mut() {
+        r.tendency = r.tendency.filter(|t| t.time > now - TENDENCY_KEPT);
+        let tendency = r.tendency;
+        if let Some(s) = r.wind.as_mut() {
+            s.tendency = tendency;
+        }
+    }
 }
 
 /// The winds worth showing for a region now: inside it, and taken in the
@@ -488,7 +527,7 @@ OBXC1    37.804 -122.341 2026 09 14 17 00  MM    MM    MM   MM  MM   MM  MM 1014
         let s = winds(parse_latest(&format!("{header}{rows}"), NOW).unwrap());
         let got: Vec<(&str, Option<f64>, Option<f64>)> = s
             .iter()
-            .map(|s| (s.id.as_str(), s.pressure_hpa, s.tendency_hpa))
+            .map(|s| (s.id.as_str(), s.pressure_hpa, s.tendency.map(|t| t.hpa)))
             .collect();
         assert_eq!(
             got,
@@ -506,7 +545,85 @@ OBXC1    37.804 -122.341 2026 09 14 17 00  MM    MM    MM   MM  MM   MM  MM 1014
         assert!(!s.iter().any(|s| s.id == "OBXC1"));
         // Without the columns, the wind is read as ever.
         let s = parse("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM\n");
-        assert_eq!((s[0].pressure_hpa, s[0].tendency_hpa), (None, None));
+        assert_eq!((s[0].pressure_hpa, s[0].tendency), (None, None));
+    }
+
+    #[test]
+    fn the_hours_tendency_outlasts_the_reports_between() {
+        let header = "#STN LAT LON YYYY MM DD hh mm WDIR WSPD GST PRES PTDY\n";
+        // Parsed late enough that no row here is in the future.
+        let fetch =
+            |row: &str| parse_latest(&format!("{header}{row}"), NOW + 4 * time::HOUR).unwrap();
+        let tendency = |kept: &BTreeMap<String, Report>| {
+            kept.get("AAMC1")
+                .and_then(|r| r.wind.as_ref())
+                .and_then(|s| s.tendency)
+        };
+        let on_the_hour = time::unix(2026, 9, 14, 17, 0, 0);
+        let mut kept = BTreeMap::new();
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 00 120 1.5 MM 1014.5 -1.2\n"),
+            NOW,
+        );
+        // Six minutes on: a new wind and barometer, PTDY `MM`. The hour's
+        // tendency stays, with the hour's time, not the new report's.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 06 130 2.0 MM 1014.3 MM\n"),
+            NOW,
+        );
+        let s = kept["AAMC1"].wind.as_ref().unwrap();
+        assert_eq!(
+            (s.time, s.from_deg),
+            (time::unix(2026, 9, 14, 17, 6, 0), Some(130.0))
+        );
+        assert_eq!(s.pressure_hpa, Some(1014.3));
+        assert_eq!(
+            tendency(&kept),
+            Some(Tendency {
+                hpa: -1.2,
+                time: on_the_hour
+            })
+        );
+        // A report with no wind still hands it on.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 12 MM MM MM MM MM\n"),
+            NOW,
+        );
+        assert_eq!(kept["AAMC1"].tendency.map(|t| t.time), Some(on_the_hour));
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 17 18 140 2.0 MM 1014.2 MM\n"),
+            NOW,
+        );
+        assert_eq!(tendency(&kept).map(|t| t.time), Some(on_the_hour));
+        // The next hour's replaces it.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 18 00 140 2.0 MM 1014.0 +0.0\n"),
+            NOW + time::HOUR,
+        );
+        assert_eq!(
+            tendency(&kept),
+            Some(Tendency {
+                hpa: 0.0,
+                time: on_the_hour + time::HOUR
+            })
+        );
+        // Three hours after that hour, with no hour's report since, it goes;
+        // the wind of a newer report stays.
+        merge(
+            &mut kept,
+            fetch("AAMC1 37.772 -122.300 2026 09 14 20 54 140 2.0 MM 1013.0 MM\n"),
+            on_the_hour + 3 * time::HOUR + 59 * 60,
+        );
+        assert!(tendency(&kept).is_some());
+        merge(&mut kept, Vec::new(), on_the_hour + 4 * time::HOUR);
+        assert!(kept["AAMC1"].wind.is_some());
+        assert_eq!(tendency(&kept), None);
+        assert_eq!(kept["AAMC1"].tendency, None);
     }
 
     #[test]
