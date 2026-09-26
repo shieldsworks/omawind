@@ -274,7 +274,8 @@ impl Wind {
                     m.insert("pressureHpa".into(), json!(round(p, 1)));
                 }
                 if let Some(t) = s.tendency_hpa {
-                    m.insert("tendencyHpa".into(), json!(round(t, 1)));
+                    // Plus zero, so a steady glass isn't sent as -0.0.
+                    m.insert("tendencyHpa".into(), json!(round(t, 1) + 0.0));
                 }
                 Value::Object(m)
             })
