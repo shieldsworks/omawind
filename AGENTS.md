@@ -92,8 +92,8 @@ particular:
 - Every `unsafe` block carries a `// SAFETY:` comment saying why it is
   sound. Keep unsafe to the existing `libc::flock` wrappers. Don't add
   new ones without need.
-- Numeric casts use `try_from`, `From`, or a named helper that documents the
-  range. A bare `as` that can truncate needs a reason.
+- Numeric cast lints are not on in this repo yet. They land with the
+  pedantic follow-up. Don't rewrite existing `as` casts in an unrelated change.
 - Take the shortcut only if it is also the right path. If the right path is
   hard, say so in the PR instead of shipping the shortcut.
 

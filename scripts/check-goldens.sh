@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
-# Compare `omawind at` on the recorded Bay run with the committed text.
-# The cache is a temp copy. This script does not write into tests/fixtures.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-if [[ ! -x target/debug/omawind ]]; then
-  cargo build --locked
-fi
+cargo build --locked
 
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT

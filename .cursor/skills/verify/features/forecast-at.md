@@ -29,4 +29,5 @@ Preconditions:
 
 - A real `XDG_CACHE_HOME` or `XDG_CONFIG_HOME` makes this run print the user's forecast. Set both to `$run` before the command.
 - The committed golden does not depend on the wall clock. `at` prints every cached hour.
-- `scripts/check-goldens.sh` is this drive for `at-berkeley`. It already uses a temp cache.
+- The byte compare was checked on x86_64. The Lambert math uses libm. If aarch64 rounds a displayed tenth differently, CI prints the diff. Don't edit the golden to hide that until you have both texts.
+- `scripts/check-goldens.sh` is this drive for `at-berkeley`. It builds first, copies the fixture into a temp cache, and diffs stdout.

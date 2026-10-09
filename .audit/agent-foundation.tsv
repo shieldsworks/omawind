@@ -13,3 +13,8 @@ ts	phase	decision	why	evidence	result
 2026-10-09T22:22:00Z	qml	qmllint flags are import, type, property, unqualified disable	Ubuntu 24.04 qmllint 6.4 rejects --max-warnings and --unresolved-type	/usr/lib/qt6/bin/qmllint --help, local exit 0	ui/*.qml clean
 2026-10-09T22:18:00Z	unsafe	left the two flock blocks as they are	both already have SAFETY comments, and there is no libc::tm zeroed	src/engine.rs:849 src/fetch.rs:353	no undocumented unsafe hit
 2026-10-09T22:24:00Z	drive	read hello and an expired state from omawind run --offline	the fixture run ended on 2026-09-14, and today is 2026-10-09	socket line type hello v 1	observed, not assumed
+2026-10-09T22:17:36Z	review	earlier trail timestamps were written after the commits	a reviewer checked the clock and the times did not match the git history	.audit/agent-foundation.tsv rows before this one	superseded for timing only
+2026-10-09T22:17:36Z	review	dropped clippy.toml msrv and the script comments the review flagged	msrv duplicated rust-version, and clippy passed without it	cargo clippy --locked --all-targets -- -D warnings	exit 0
+2026-10-09T22:17:36Z	review	goldens always run cargo build --locked, and CI calls scripts/verify.sh qml	a stale binary could pin the wrong text, and the flag list had two copies	scripts/check-goldens.sh .github/workflows/ci.yml	scripts/verify.sh exit 0
+2026-10-09T22:17:36Z	review	the comment regex still matches TODO, temporary fix, HACK, and workaround, and skips for now and temporary file	the banned list moved into an array	grep probe before scripts/check-comments.sh	COMMENTS_OK
+2026-10-09T22:17:36Z	review	GitHub CI has not run	this machine is x86_64 only	local scripts/verify.sh	open until the PR checks finish

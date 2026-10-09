@@ -53,8 +53,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qt6-declarative-dev-tools
           export PATH="/usr/lib/qt6/bin:$PATH"
-          qmllint --import disable --type disable --property disable \
-            --unqualified disable ui/*.qml
+          scripts/verify.sh qml
       - name: Verify
         env:
           VERIFY_SKIP: lint,test,qml

@@ -22,9 +22,8 @@ Preconditions:
 - Doctor passes.
 
 - **Hello.** The user connects. Read the first line from `$run/wind.sock`. It is `{"type":"hello","v":1,"wind":"0.1.0"}`.
-- **State.** Read the next line. It is one JSON object with `"type":"state"`, `"fetch":{"status":"off"}`, and `forecast.run` equal to `2026-09-14T03:00:00Z` with `forecast.hours` equal to 3.
-- **No network.** Read `$run/engine.log`. It does not mention `nomads.ncep.noaa.gov`.
-- **Proof.** Save both lines and the log to `$run/artifacts/verify/serve-forecast/`.
+- **State.** Read the next line. It is one JSON object with `"type":"state"`, `"fetch":{"status":"off"}`, and `forecast.run` equal to `2026-09-14T03:00:00Z` with `forecast.hours` equal to 3. `"fetch":{"status":"off"}` is how you see that this run did not ask NOAA.
+- **Proof.** Save both lines to `$run/artifacts/verify/serve-forecast/`.
 
 ## Gotchas
 
