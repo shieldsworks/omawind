@@ -22,3 +22,7 @@ run = [
 [tasks.format]
 description = "rustfmt, writing"
 run = "cargo fmt"
+
+[tasks.goldens]
+description = "Compare omawind at on the Bay fixture with the committed text"
+run = "scripts/check-goldens.sh"
