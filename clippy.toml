@@ -1,0 +1,8 @@
+# Tests may unwrap and expect: a panic is how a test fails.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-dbg-in-tests = true
+
+# Keep the MSRV in step with Cargo.toml's rust-version so clippy never
+# suggests an API the declared minimum doesn't have.
+msrv = "1.89"
