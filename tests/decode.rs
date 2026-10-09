@@ -2,6 +2,11 @@
 //! in tests/fixtures/hrrr/f01.reference.txt come from scripts/reference.py,
 //! never from omawind.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a panic is how an integration test fails"
+)]
+
 use omawind::{forecast::Forecast, grib, time};
 use std::collections::HashMap;
 use std::path::Path;

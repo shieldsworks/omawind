@@ -23,14 +23,6 @@ run = [
 description = "rustfmt, writing"
 run = "cargo fmt"
 
-[tasks.replay]
-description = "Run the hub on the sample sail out of Berkeley Marina"
-run = "cargo run --locked -- run --source replay:tests/fixtures/berkeley-marina.nmea"
-
-[tasks.watch]
-description = "Print the running hub's state as it changes"
-run = "cargo run --locked -- watch"
-
-[tasks.sample]
-description = "Regenerate the synthetic sample sail"
-run = "python3 scripts/sample-sail.py"
+[tasks.goldens]
+description = "Compare omawind at on the Bay fixture with the committed text"
+run = "scripts/check-goldens.sh"

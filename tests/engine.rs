@@ -1,6 +1,11 @@
 //! The engine end to end: a cached run in, an app's view out, the boat's
 //! position from a stand-in omakeel. The clock is pinned inside the run.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "a panic is how an integration test fails"
+)]
+
 use omawind::{config::Region, engine, fetch, obs, time};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
