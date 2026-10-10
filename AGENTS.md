@@ -111,8 +111,8 @@ The reviewer reports what it ran and saw.
 ## Suite conventions
 
 - Rust, edition 2024, written from scratch with few dependencies. Ask before
-  adding a crate. The crates this repo uses are `serde_json`, `libc`, and
-  `tokio`.
+  adding a crate. The crates this repo uses are `serde_json`, `libc`,
+  `tokio`, and `omakeel-protocol`.
 - Always pass `--locked`. Don't change `Cargo.lock` unless the task is a
   dependency change.
 - The wire format is specified in `docs/protocol.md`. Change that doc in
