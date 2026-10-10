@@ -65,11 +65,12 @@ pub struct Config {
 
 /// `$XDG_RUNTIME_DIR/omawind/wind.sock`.
 pub fn default_socket() -> io::Result<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join("omawind").join("wind.sock"))
-        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR must be set to an absolute path"))
+    match config::xdg_base("XDG_RUNTIME_DIR").map_err(io::Error::other)? {
+        Some(dir) => Ok(dir.join("omawind").join("wind.sock")),
+        None => Err(io::Error::other(
+            "XDG_RUNTIME_DIR must be set to an absolute path",
+        )),
+    }
 }
 
 enum Event {

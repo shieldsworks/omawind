@@ -121,27 +121,48 @@ impl Settings {
     }
 }
 
-pub fn home_dir() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
-}
-
-pub fn config_path() -> PathBuf {
-    if let Some(p) = std::env::var_os("OMAWIND_CONFIG") {
-        return PathBuf::from(p);
+pub(crate) fn xdg_base(var: &str) -> Result<Option<PathBuf>, String> {
+    // The XDG base directory spec treats an empty value as unset.
+    let Some(value) = std::env::var_os(var).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        Ok(Some(path))
+    } else {
+        Err(format!("{var} must be an absolute path"))
     }
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home_dir().join(".config"));
-    base.join("omawind/config.toml")
 }
 
-pub fn cache_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| home_dir().join(".cache"));
-    base.join("omawind")
+fn home_dir() -> Result<PathBuf, String> {
+    let Some(value) = std::env::var_os("HOME") else {
+        return Err("HOME is not set".into());
+    };
+    let path = PathBuf::from(&value);
+    if value.is_empty() || !path.is_absolute() {
+        Err("HOME must be an absolute path".into())
+    } else {
+        Ok(path)
+    }
+}
+
+pub fn config_path() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("OMAWIND_CONFIG") {
+        return Ok(PathBuf::from(path));
+    }
+    let base = match xdg_base("XDG_CONFIG_HOME")? {
+        Some(base) => base,
+        None => home_dir()?.join(".config"),
+    };
+    Ok(base.join("omawind/config.toml"))
+}
+
+pub fn cache_dir() -> Result<PathBuf, String> {
+    let base = match xdg_base("XDG_CACHE_HOME")? {
+        Some(base) => base,
+        None => home_dir()?.join(".cache"),
+    };
+    Ok(base.join("omawind"))
 }
 
 /// The settings file, or the defaults when there isn't one.

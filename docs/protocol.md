@@ -7,6 +7,10 @@ widget and omahelm's wind layer are clients.
 
 - A Unix stream socket, `$XDG_RUNTIME_DIR/omawind/wind.sock` by default
   (`--socket` sets another). The directory is created with mode 0700.
+- An unset or empty `XDG_RUNTIME_DIR` makes `omawind run` exit unless
+  `--socket` is set.
+- A relative `XDG_RUNTIME_DIR` is an error even when `--socket` is set,
+  because omakeel's default socket is still resolved.
 - A lock file beside the socket (`wind.sock.lock`) keeps a second engine
   from starting on the same socket. A socket left behind by a crashed engine
   is replaced.
@@ -204,6 +208,11 @@ Both default to the values above: San Francisco Bay, and the Berkeley
 Marina. Problems are reported in `state.problems` and the defaults kept.
 
 ## Files
+
+A relative `XDG_CONFIG_HOME` or `XDG_CACHE_HOME` is an error. An unset or
+empty `XDG_CONFIG_HOME` uses `$HOME/.config`. An unset or empty
+`XDG_CACHE_HOME` uses `$HOME/.cache`. `HOME` must be an absolute path when
+either variable is unset or empty.
 
 - Runs: `$XDG_CACHE_HOME/omawind/hrrr/<south>_<west>_<north>_<east>/<YYYYMMDDHH>/f00.grib2`
   and on: one GRIB2 file per hour, as NOAA's NOMADS filter cut them, in a
