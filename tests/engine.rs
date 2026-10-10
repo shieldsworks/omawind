@@ -396,3 +396,41 @@ async fn with_nothing_cached_there_is_no_forecast_yet() {
     wind.abort();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+async fn a_second_engine_is_told_omawind_is_already_running() {
+    let dir = scratch("second");
+    let socket = dir.join("wind.sock");
+    let first = tokio::spawn(engine::run(config(&dir, four_utc)));
+    let _app = App::connect(&socket).await;
+    let error = engine::run(config(&dir, four_utc)).await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+    assert_eq!(
+        error.to_string(),
+        format!("omawind is already running on {}", socket.display())
+    );
+    first.abort();
+    let _ = first.await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn dropping_the_engine_removes_the_socket() {
+    let dir = scratch("drop");
+    let socket = dir.join("wind.sock");
+    let wind = tokio::spawn(engine::run(config(&dir, four_utc)));
+    let mut app = App::connect(&socket).await;
+    assert_eq!(app.next().await["type"], "hello");
+    drop(app);
+    assert!(socket.exists());
+    wind.abort();
+    let _ = wind.await;
+    assert!(!socket.exists());
+    let again = tokio::spawn(engine::run(config(&dir, four_utc)));
+    let mut app = App::connect(&socket).await;
+    assert_eq!(app.next().await["type"], "hello");
+    again.abort();
+    let _ = again.await;
+    assert!(!socket.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
