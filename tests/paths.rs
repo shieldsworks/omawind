@@ -1,5 +1,3 @@
-//! HOME and the XDG base directories, driven through the `omawind` binary.
-
 #![allow(
     clippy::unwrap_used,
     reason = "a panic is how an integration test fails"
@@ -33,10 +31,7 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-/// Waits until the child exits. A child still up at the deadline is killed
-/// and its output is returned, so a serve that should have exited fails the
-/// stderr assertion instead of hanging the suite.
-fn captured(cmd: &mut Command, limit: Duration) -> Output {
+fn wait_or_kill(cmd: &mut Command, limit: Duration) -> Output {
     let mut child = cmd
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -67,20 +62,20 @@ fn assert_failure(output: &Output, stderr: &str) {
 
 #[test]
 fn at_reports_when_home_is_not_set() {
-    let output = captured(&mut command(&["at"]), Duration::from_secs(5));
+    let output = wait_or_kill(&mut command(&["at"]), Duration::from_secs(5));
     assert_failure(&output, "omawind: HOME is not set\n");
 }
 
 #[test]
 fn at_rejects_a_relative_home() {
-    let output = captured(command(&["at"]).env("HOME", "rel"), Duration::from_secs(5));
+    let output = wait_or_kill(command(&["at"]).env("HOME", "rel"), Duration::from_secs(5));
     assert_failure(&output, "omawind: HOME must be an absolute path\n");
 }
 
 #[test]
 fn at_rejects_a_relative_xdg_config_home() {
     let dir = scratch("config-rel");
-    let output = captured(
+    let output = wait_or_kill(
         command(&["at"])
             .env("HOME", &dir)
             .env("XDG_CONFIG_HOME", "rel"),
@@ -98,7 +93,7 @@ fn at_rejects_a_relative_xdg_cache_home() {
     let dir = scratch("cache-rel");
     let config = dir.join("config");
     fs::create_dir_all(&config).unwrap();
-    let output = captured(
+    let output = wait_or_kill(
         command(&["at"])
             .env("HOME", &dir)
             .env("XDG_CONFIG_HOME", &config)
@@ -119,7 +114,7 @@ fn at_uses_absolute_xdg_dirs_when_home_is_unset() {
     let cache = dir.join("cache");
     fs::create_dir_all(&config).unwrap();
     fs::create_dir_all(&cache).unwrap();
-    let output = captured(
+    let output = wait_or_kill(
         command(&["at"])
             .env("XDG_CONFIG_HOME", &config)
             .env("XDG_CACHE_HOME", &cache),
@@ -140,7 +135,7 @@ fn at_reads_the_cache_under_home_when_xdg_dirs_are_empty() {
     for hour in ["f00.grib2", "f01.grib2", "f02.grib2"] {
         fs::copy(Path::new(FIXTURE).join(hour), run.join(hour)).unwrap();
     }
-    let output = captured(
+    let output = wait_or_kill(
         command(&["at", "37.8663,-122.3148"])
             .env("HOME", &dir)
             .env("XDG_CONFIG_HOME", "")
@@ -161,7 +156,7 @@ fn run_exits_when_the_runtime_dir_is_unset() {
     let cache = dir.join("cache");
     fs::create_dir_all(&config).unwrap();
     fs::create_dir_all(&cache).unwrap();
-    let output = captured(
+    let output = wait_or_kill(
         command(&["run", "--offline"])
             .env("HOME", &dir)
             .env("XDG_CONFIG_HOME", &config)
@@ -182,7 +177,7 @@ fn run_rejects_a_relative_runtime_dir() {
     let cache = dir.join("cache");
     fs::create_dir_all(&config).unwrap();
     fs::create_dir_all(&cache).unwrap();
-    let output = captured(
+    let output = wait_or_kill(
         command(&["run", "--offline"])
             .env("HOME", &dir)
             .env("XDG_CONFIG_HOME", &config)
@@ -278,7 +273,7 @@ fn at_with_omawind_config_does_not_need_home() {
     let cache = dir.join("cache");
     fs::create_dir_all(&cache).unwrap();
     let config = dir.join("missing.toml");
-    let output = captured(
+    let output = wait_or_kill(
         command(&["at"])
             .env("OMAWIND_CONFIG", &config)
             .env("XDG_CACHE_HOME", &cache),
