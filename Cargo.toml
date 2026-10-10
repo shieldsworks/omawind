@@ -13,6 +13,7 @@ serde_json = "1"
 # flock for the socket's lock file, as omakeel and omahelm do.
 libc = "0.2"
 tokio = { version = "1.53", features = ["rt", "net", "time", "sync", "io-util", "macros", "signal"] }
+omakeel-protocol = { git = "https://github.com/shieldsworks/omakeel", package = "omakeel-protocol" }
 
 [profile.release]
 debug = "line-tables-only"

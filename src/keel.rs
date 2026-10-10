@@ -1,7 +1,7 @@
 //! The boat's position from omakeel: its socket and `state` messages,
 //! version 1, as omakeel's docs/protocol.md describes them.
 
-use serde_json::Value;
+use omakeel_protocol::{Message, ReadError};
 use std::path::PathBuf;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
@@ -41,35 +41,20 @@ pub fn default_socket() -> Result<Option<PathBuf>, String> {
 
 /// What one line from omakeel says about the boat, if anything.
 pub fn read(line: &str) -> Option<Update> {
-    let m: Value = serde_json::from_str(line).ok()?;
-    let v = m.get("v")?.as_u64()?;
-    if v != 1 {
-        return Some(Update::Incompatible(v));
-    }
-    if m.get("type")?.as_str()? != "state" {
-        return None;
-    }
-    let fix = m.get("fix")?;
-    let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
-    let (lat, lon) = (
-        fix.get("lat").and_then(Value::as_f64),
-        fix.get("lon").and_then(Value::as_f64),
-    );
-    let boat = match (lat, lon) {
-        (Some(lat), Some(lon))
-            if status != "none"
-                && (-90.0..=90.0).contains(&lat)
-                && (-180.0..=180.0).contains(&lon) =>
-        {
-            Some(Boat {
-                lat,
-                lon,
-                current: status == "ok",
-            })
+    match Message::from_line(line) {
+        Ok(Some(Message::State { fix, .. })) => {
+            let boat = fix.position().map(|position| Boat {
+                lat: position.place.lat,
+                lon: position.place.lon,
+                current: position.current,
+            });
+            Some(Update::Boat(boat))
         }
-        _ => None,
-    };
-    Some(Update::Boat(boat))
+        Err(ReadError::Version { found: Some(found) }) => {
+            Some(Update::Incompatible(u64::from(found)))
+        }
+        Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) | Err(_) => None,
+    }
 }
 
 /// Follows omakeel for as long as the receiver lives, reconnecting every
