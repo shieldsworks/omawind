@@ -24,7 +24,6 @@ pub struct Boat {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Update {
-    /// omakeel's latest fix: None when it has no position.
     Boat(Option<Boat>),
     /// Not connected to omakeel.
     Lost,
@@ -296,6 +295,16 @@ mod tests {
                 kept(here),
             ),
             (
+                "an age of 0.0 is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0.0},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "a fractional age is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":1.5},"sources":[]}"#,
+                kept(here),
+            ),
+            (
                 "a satellite count the crate cannot store is ignored",
                 r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0,"satellites":300},"sources":[]}"#,
                 kept(here),
@@ -334,6 +343,21 @@ mod tests {
                 "v of 0 is another version",
                 r#"{"type":"hello","v":0}"#,
                 Some(Update::Incompatible(0)),
+            ),
+            (
+                "v of 2 with a null field is another version",
+                r#"{"type":"hello","v":2,"keel":null}"#,
+                Some(Update::Incompatible(2)),
+            ),
+            (
+                "a source missing its sentence count is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[{"name":"gps","status":"ok"}]}"#,
+                kept(here),
+            ),
+            (
+                "status none with only a latitude clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"none","lat":37.8647},"sources":[]}"#,
+                cleared,
             ),
             (
                 "lat without lon clears the boat",
