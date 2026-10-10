@@ -43,11 +43,17 @@ pub fn default_socket() -> Result<Option<PathBuf>, String> {
 pub fn read(line: &str) -> Option<Update> {
     match Message::from_line(line) {
         Ok(Some(Message::State { fix, .. })) => {
-            let boat = fix.position().map(|position| Boat {
-                lat: position.place.lat,
-                lon: position.place.lon,
-                current: position.current,
-            });
+            let boat = fix
+                .position()
+                .filter(|position| {
+                    (-90.0..=90.0).contains(&position.place.lat)
+                        && (-180.0..=180.0).contains(&position.place.lon)
+                })
+                .map(|position| Boat {
+                    lat: position.place.lat,
+                    lon: position.place.lon,
+                    current: position.current,
+                });
             Some(Update::Boat(boat))
         }
         Err(ReadError::Version { found: Some(found) }) => {
@@ -130,6 +136,14 @@ mod tests {
         );
         assert_eq!(read("{}"), None);
         assert_eq!(read("garbage"), None);
+    }
+
+    #[test]
+    fn a_position_outside_the_degree_ranges_clears_the_boat() {
+        let lat = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":91.0,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#;
+        assert_eq!(read(lat), Some(Update::Boat(None)));
+        let lon = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":181.0,"ageSeconds":0},"sources":[]}"#;
+        assert_eq!(read(lon), Some(Update::Boat(None)));
     }
 
     #[test]
