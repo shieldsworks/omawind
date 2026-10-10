@@ -1,7 +1,8 @@
 //! The boat's position from omakeel: its socket and `state` messages,
 //! version 1, as omakeel's docs/protocol.md describes them.
 
-use omakeel_protocol::{Message, ReadError};
+use omakeel_protocol::Message;
+use serde_json::Value;
 use std::path::PathBuf;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
@@ -56,11 +57,43 @@ pub fn read(line: &str) -> Option<Update> {
                 });
             Some(Update::Boat(boat))
         }
-        Err(ReadError::Version { found: Some(found) }) => {
-            Some(Update::Incompatible(u64::from(found)))
-        }
-        Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) | Err(_) => None,
+        Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) => None,
+        // `None` keeps the last fix. A line the crate rejects still has to
+        // clear the boat, or name a version, the way the field walk did.
+        Err(_) => read_rejected(line),
     }
+}
+
+fn read_rejected(line: &str) -> Option<Update> {
+    let m: Value = serde_json::from_str(line).ok()?;
+    let v = m.get("v")?.as_u64()?;
+    if v != 1 {
+        return Some(Update::Incompatible(v));
+    }
+    if m.get("type")?.as_str()? != "state" {
+        return None;
+    }
+    let fix = m.get("fix")?;
+    let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
+    let (lat, lon) = (
+        fix.get("lat").and_then(Value::as_f64),
+        fix.get("lon").and_then(Value::as_f64),
+    );
+    let boat = match (lat, lon) {
+        (Some(lat), Some(lon))
+            if status != "none"
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon) =>
+        {
+            Some(Boat {
+                lat,
+                lon,
+                current: status == "ok",
+            })
+        }
+        _ => None,
+    };
+    Some(Update::Boat(boat))
 }
 
 /// Follows omakeel for as long as the receiver lives, reconnecting every
@@ -157,5 +190,263 @@ mod tests {
                 current: false,
             })))
         );
+    }
+
+    /// The field walk from before `omakeel-protocol`. The table is its result.
+    fn read_before_protocol(line: &str) -> Option<Update> {
+        let m: Value = serde_json::from_str(line).ok()?;
+        let v = m.get("v")?.as_u64()?;
+        if v != 1 {
+            return Some(Update::Incompatible(v));
+        }
+        if m.get("type")?.as_str()? != "state" {
+            return None;
+        }
+        let fix = m.get("fix")?;
+        let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
+        let (lat, lon) = (
+            fix.get("lat").and_then(Value::as_f64),
+            fix.get("lon").and_then(Value::as_f64),
+        );
+        let boat = match (lat, lon) {
+            (Some(lat), Some(lon))
+                if status != "none"
+                    && (-90.0..=90.0).contains(&lat)
+                    && (-180.0..=180.0).contains(&lon) =>
+            {
+                Some(Boat {
+                    lat,
+                    lon,
+                    current: status == "ok",
+                })
+            }
+            _ => None,
+        };
+        Some(Update::Boat(boat))
+    }
+
+    #[test]
+    fn read_matches_the_walk_it_replaced() {
+        let here = Boat {
+            lat: 37.8647,
+            lon: -122.3207,
+            current: true,
+        };
+        let last = Boat {
+            current: false,
+            ..here
+        };
+        let kept = |boat: Boat| Some(Update::Boat(Some(boat)));
+        let cleared = Some(Update::Boat(None));
+        let ok = r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#;
+        let mut cases: Vec<(&str, String, Option<Update>)> = [
+            (
+                "unknown fix status keeps a non-current boat",
+                r#"{"type":"state","v":1,"fix":{"status":"survey","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                kept(last),
+            ),
+            (
+                "unknown fix status without coordinates clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"survey"},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "unknown fix status outside the degree ranges clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"survey","lat":91.0,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "unknown source status is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[{"name":"gps","status":"asleep","sentences":1,"rejected":0}]}"#,
+                kept(here),
+            ),
+            (
+                "a source missing its name is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[{"status":"ok","sentences":0,"rejected":0}]}"#,
+                kept(here),
+            ),
+            (
+                "missing sources still carries the fix",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0}}"#,
+                kept(here),
+            ),
+            (
+                "sources that are not an array are ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":{}}"#,
+                kept(here),
+            ),
+            (
+                "a none fix with no sources array clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"none"}}"#,
+                cleared,
+            ),
+            (
+                "extra fields are ignored",
+                r#"{"type":"state","v":1,"note":"bay","fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0,"receiver":"gps"},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "a null extra field is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[],"note":null}"#,
+                kept(here),
+            ),
+            (
+                "a null age is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":null},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "a satellite count the crate cannot store is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0,"satellites":300},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "a non-numeric speed is ignored",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0,"sogKn":"fast"},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "v as a string is not a version",
+                r#"{"type":"state","v":"1","fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "v as a fraction is not a version",
+                r#"{"type":"state","v":1.5,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "v as a negative number is not a version",
+                r#"{"type":"state","v":-1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "v written as 1.0 is not an integer version",
+                r#"{"type":"state","v":1.0,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "v past u32::MAX is another version",
+                r#"{"type":"state","v":4294967296,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                Some(Update::Incompatible(4_294_967_296)),
+            ),
+            (
+                "v of 0 is another version",
+                r#"{"type":"hello","v":0}"#,
+                Some(Update::Incompatible(0)),
+            ),
+            (
+                "lat without lon clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "lon without lat clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "coordinates stored as strings clear the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":"37.8647","lon":"-122.3207","ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "nofix with coordinates keeps a non-current boat",
+                r#"{"type":"state","v":1,"fix":{"status":"nofix","lat":37.8647,"lon":-122.3207,"ageSeconds":4},"sources":[]}"#,
+                kept(last),
+            ),
+            (
+                "nofix with coordinates and no age keeps a non-current boat",
+                r#"{"type":"state","v":1,"fix":{"status":"nofix","lat":37.8647,"lon":-122.3207},"sources":[]}"#,
+                kept(last),
+            ),
+            (
+                "nofix without coordinates clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"nofix"},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "nofix outside the degree ranges clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"nofix","lat":37.8647,"lon":181.0,"ageSeconds":4},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "an ok fix with no age keeps a current boat",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":37.8647,"lon":-122.3207},"sources":[]}"#,
+                kept(here),
+            ),
+            (
+                "a missing status clears the boat",
+                r#"{"type":"state","v":1,"fix":{"lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "status none with coordinates clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"none","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "status NONE is not none, so the coordinates stay",
+                r#"{"type":"state","v":1,"fix":{"status":"NONE","lat":37.8647,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                kept(last),
+            ),
+            (
+                "a null fix clears the boat",
+                r#"{"type":"state","v":1,"fix":null,"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "a missing fix is not a state the boat can use",
+                r#"{"type":"state","v":1,"sources":[]}"#,
+                None,
+            ),
+            (
+                "a fix that is not an object clears the boat",
+                r#"{"type":"state","v":1,"fix":"ok","sources":[]}"#,
+                cleared,
+            ),
+            (
+                "NaN is not JSON",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":NaN,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "Infinity is not JSON",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":Infinity,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+            (
+                "a coordinate spelled NaN clears the boat",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":"NaN","lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                cleared,
+            ),
+            (
+                "a coordinate past what f64 can hold is not JSON",
+                r#"{"type":"state","v":1,"fix":{"status":"ok","lat":1e9999,"lon":-122.3207,"ageSeconds":0},"sources":[]}"#,
+                None,
+            ),
+        ]
+        .into_iter()
+        .map(|(name, line, expected)| (name, line.to_string(), expected))
+        .collect();
+        cases.push((
+            "a trailing newline is still the fix",
+            format!("{ok}\n"),
+            kept(here),
+        ));
+        let mut misses = Vec::new();
+        for (name, line, expected) in &cases {
+            let before = read_before_protocol(line);
+            let after = read(line);
+            if before != *expected {
+                misses.push(format!(
+                    "{name}: pasted walk {before:?}, table {expected:?}"
+                ));
+            }
+            if after != *expected {
+                misses.push(format!("{name}: read {after:?}, table {expected:?}"));
+            }
+        }
+        assert!(misses.is_empty(), "{}", misses.join("\n"));
     }
 }
