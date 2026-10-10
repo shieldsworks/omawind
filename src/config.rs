@@ -138,11 +138,11 @@ fn home_dir() -> Result<PathBuf, String> {
     let Some(value) = std::env::var_os("HOME") else {
         return Err("HOME is not set".into());
     };
-    let path = PathBuf::from(&value);
-    if value.is_empty() || !path.is_absolute() {
-        Err("HOME must be an absolute path".into())
-    } else {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
         Ok(path)
+    } else {
+        Err("HOME must be an absolute path".into())
     }
 }
 
