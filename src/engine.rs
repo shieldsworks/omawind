@@ -801,8 +801,8 @@ impl Drop for Client {
     }
 }
 
-/// Takes the lock beside the socket, so one socket has one engine, then
-/// binds, replacing a socket a crashed engine left behind. As omakeel does.
+/// Takes the lock beside the socket, so one socket has one hub, then binds,
+/// replacing a socket a crashed hub left behind.
 fn bind(path: &Path) -> io::Result<(UnixListener, SocketFile)> {
     if let Some(dir) = path.parent()
         && !dir.as_os_str().is_empty()
@@ -819,6 +819,7 @@ fn bind(path: &Path) -> io::Result<(UnixListener, SocketFile)> {
                 format!("{} exists and isn't a socket", path.display()),
             ));
         }
+        // Holding the lock means no hub is serving it.
         fs::remove_file(path)?;
     }
     let listener = UnixListener::bind(path)?;
@@ -831,12 +832,15 @@ fn bind(path: &Path) -> io::Result<(UnixListener, SocketFile)> {
     ))
 }
 
+/// `keel.sock.lock` for `keel.sock`: the whole socket name plus `.lock`, so
+/// no two socket names share a lock.
 fn lock_path(socket: &Path) -> PathBuf {
     let mut name = OsString::from(socket.as_os_str());
     name.push(".lock");
     PathBuf::from(name)
 }
 
+/// An exclusive lock beside the socket, held until exit.
 fn lock(socket: &Path) -> io::Result<File> {
     let file = OpenOptions::new()
         .read(true)
@@ -860,6 +864,7 @@ fn lock(socket: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// Removes the socket, then lets go of the lock.
 struct SocketFile {
     path: PathBuf,
     _lock: File,
