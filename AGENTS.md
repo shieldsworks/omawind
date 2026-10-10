@@ -44,11 +44,18 @@ in `.cursor/skills/verify/features/`.
 ## The gates are not yours to move
 
 These files set the rules and are changed only in a PR whose whole purpose
-is changing them, reviewed by a human:
+is changing them:
 
 - `[lints]` in `Cargo.toml` and `clippy.toml`
 - `.github/workflows/`, `scripts/verify.sh`, `scripts/check-comments.sh`, `scripts/check-goldens.sh`
 - `mise.toml` task definitions for `lint`, `test`, and `goldens`
+
+Such a PR merges only after review by someone other than its author, either
+Casey or Casey's delegated reviewer Dev. Dev's review means all three. An
+independent agent verifies the PR head on a clean checkout (runs the repo's
+verify gate and drives the changed behavior). An adversarial review challenges
+the change. CI is green on the exact head SHA merged. The author agent never
+approves or merges its own PR.
 
 To silence one lint at one site, use
 `#[expect(clippy::<lint>, reason = "<the fact that makes this correct>")]` on
