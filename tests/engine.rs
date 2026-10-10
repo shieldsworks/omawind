@@ -3,6 +3,7 @@
 
 #![allow(
     clippy::unwrap_used,
+    clippy::expect_used,
     reason = "a panic is how an integration test fails"
 )]
 
