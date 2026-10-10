@@ -146,4 +146,17 @@ mod tests {
         assert_eq!(read("{}"), None);
         assert_eq!(read("garbage"), None);
     }
+
+    #[test]
+    fn a_stale_fix_keeps_the_position() {
+        let line = r#"{"type":"state","v":1,"fix":{"status":"stale","lat":37.8647,"lon":-122.3207,"ageSeconds":6},"sources":[]}"#;
+        assert_eq!(
+            read(line),
+            Some(Update::Boat(Some(Boat {
+                lat: 37.8647,
+                lon: -122.3207,
+                current: false,
+            })))
+        );
+    }
 }
