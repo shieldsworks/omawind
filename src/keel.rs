@@ -32,11 +32,11 @@ pub enum Update {
 }
 
 /// `$XDG_RUNTIME_DIR/omakeel/keel.sock`.
-pub fn default_socket() -> Option<PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|d| d.is_absolute())
-        .map(|d| d.join("omakeel").join("keel.sock"))
+pub fn default_socket() -> Result<Option<PathBuf>, String> {
+    Ok(
+        crate::config::xdg_base("XDG_RUNTIME_DIR")?
+            .map(|dir| dir.join("omakeel").join("keel.sock")),
+    )
 }
 
 /// What one line from omakeel says about the boat, if anything.

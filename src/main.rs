@@ -79,12 +79,15 @@ fn serve(args: &[String]) -> Result<(), String> {
     }
     let config = engine::Config {
         socket: match socket {
-            Some(s) => s,
+            Some(path) => path,
             None => engine::default_socket().map_err(|e| e.to_string())?,
         },
-        keel: keel_socket.or_else(keel::default_socket),
-        cache: config::cache_dir(),
-        settings: config::config_path(),
+        keel: match keel_socket {
+            Some(path) => Some(path),
+            None => keel::default_socket()?,
+        },
+        cache: config::cache_dir()?,
+        settings: config::config_path()?,
         fetch: !offline,
         stations: (!offline).then(obs::Source::ndbc),
         clock: time::now,
@@ -104,7 +107,7 @@ fn serve(args: &[String]) -> Result<(), String> {
 }
 
 fn settings() -> Result<config::Settings, String> {
-    let (s, problems) = config::load(&config::config_path());
+    let (s, problems) = config::load(&config::config_path()?);
     for p in problems {
         eprintln!("omawind: {p}");
     }
@@ -113,7 +116,7 @@ fn settings() -> Result<config::Settings, String> {
 
 fn fetch_now() -> Result<(), String> {
     let s = settings()?;
-    let cache = config::cache_dir();
+    let cache = config::cache_dir()?;
     let run =
         fetch::newest_run(time::now())?.ok_or("NOMADS lists no HRRR run with 18 hours out yet")?;
     eprintln!("HRRR {} UTC, {} hours out", run.key(), run.unbroken().len());
@@ -150,7 +153,7 @@ fn at(position: Option<&str>) -> Result<(), String> {
             .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
             .ok_or("expected LAT,LON in degrees, like 37.8663,-122.3148")?,
     };
-    let (found, problem) = fetch::load_newest(&config::cache_dir(), &s.region);
+    let (found, problem) = fetch::load_newest(&config::cache_dir()?, &s.region);
     let (_, f) = found.ok_or_else(|| {
         problem.unwrap_or_else(|| "nothing cached for the region yet: run omawind fetch".into())
     })?;
@@ -184,7 +187,7 @@ fn at(position: Option<&str>) -> Result<(), String> {
 fn stations() -> Result<(), String> {
     let s = settings()?;
     let source = obs::Source::ndbc();
-    let names = obs::names(&config::cache_dir(), &source).unwrap_or_else(|e| {
+    let names = obs::names(&config::cache_dir()?, &source).unwrap_or_else(|e| {
         eprintln!("omawind: station names: {e}");
         HashMap::new()
     });
