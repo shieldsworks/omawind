@@ -88,6 +88,50 @@ open an issue and leave the code honest. A constraint from outside is
 written as the fact. What the outside thing does, and what this code does
 about it.
 
+The script reads tracked `.rs`, `.qml`, `.js`, `.sh`, `.py`, `.toml` and
+`.yml` files, including files in active submodules. It skips
+`tests/fixtures/` and `**/vendor/**`. The vendor pathspec does not match
+a top-level `vendor/` directory, so those files are scanned. It does not
+read HTML, CSS or Markdown, and the rule holds there too, including the
+scripts inline in the pages.
+
+"for now" and "temporary file" are not in the pattern. The apps use "for
+now" for the current time.
+
+Omahoy's `scripts/check-comments.sh` is the canonical copy. This repo
+carries that file byte for byte. The pin is this sha256. A copy with any
+other hash is not this rule.
+
+```
+f3ec8a2d07e8f1e7c50770d0bb93579fc7bb0d60fc8e359a22607ba55cebc6c6  scripts/check-comments.sh
+```
+
+From the repo root, pipe that line to `sha256sum -c`. The comments step
+in `scripts/verify.sh` does that before it runs the script, and fails
+when the hash does not match. Run the script with no arguments to scan
+the default set.
+
+```sh
+scripts/check-comments.sh
+```
+
+Pass git pathspecs to scan a different set. Those arguments replace the
+default set. The script still excludes its own path.
+
+The script's first command is `trap - EXIT ERR DEBUG RETURN`. It then
+unsets `GIT_LITERAL_PATHSPECS`, `GIT_GLOB_PATHSPECS`,
+`GIT_NOGLOB_PATHSPECS`, `GIT_ICASE_PATHSPECS`, `GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_NAMESPACE`,
+`GIT_OBJECT_DIRECTORY`, and `GIT_ALTERNATE_OBJECT_DIRECTORIES` before
+it lists files. `git`, `grep`, `realpath`, and `mktemp` are run with
+`command -p`, which uses the default `PATH` and does not call a function
+named `git`, `grep`, `realpath`, or `mktemp`. Names come from
+`git ls-files -z --recurse-submodules`. The script's own path is
+excluded as a literal pathspec. A listed path that is exactly `-` is read
+as `./-`, because grep treats `-` as standard input. A search error fails
+the run. An empty selection passes only when that listing has no file for
+this scan to read.
+
 ## Copy the right pattern
 
 You will copy what you see. Before copying, check that the code you copy
