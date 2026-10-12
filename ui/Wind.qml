@@ -13,8 +13,12 @@ QtObject {
     readonly property int version: 1
     readonly property string runtime: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/omawind/"
     readonly property string path: runtime + "wind.sock"
-    // The checkout or plugin directory: this file is <repo>/ui/Wind.qml.
-    readonly property string repo: decodeURIComponent(String(Qt.resolvedUrl("..")).replace(/^file:\/\//, "")).replace(/\/$/, "")
+    function parentOf(path) {
+        return String(path).replace(/\/[^/]+$/, "");
+    }
+    // `quickshell -p` makes ui/ the config root, so Qt.resolvedUrl("..") is qrc:/qs-blackhole.
+    readonly property string uiDir: decodeURIComponent(String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")).replace(/\/+$/, "")
+    readonly property string repo: parentOf(uiDir)
     readonly property string binary: Quickshell.env("OMAWIND_BIN") || repo + "/target/release/omawind"
     // The engine's stderr, so a failed start can be shown.
     readonly property string log: runtime + "engine.log"

@@ -1,4 +1,3 @@
-// Loads a QML file the way `quickshell -p` does (quickshell 0.3.2).
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
