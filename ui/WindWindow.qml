@@ -46,6 +46,12 @@ Item {
     readonly property bool placed: !!here && typeof here.lat === "number" && typeof here.lon === "number"
         && isFinite(here.lat) && isFinite(here.lon) && Math.abs(here.lat) <= 90 && Math.abs(here.lon) <= 180
     readonly property string where: !here ? "" : here.at === "home" ? "home" : "the boat"
+    readonly property string engineStatus: {
+        if (Wind.incompatible) return "omawind speaks another protocol version";
+        if (Wind.connected) return "";
+        if (!Wind.waited) return "Starting omawind…";
+        return Wind.lastLog || "omawind isn't running";
+    }
 
     // The stations, nearest the boat (or home) first, each with its range
     // and bearing from there.
@@ -107,7 +113,8 @@ Item {
             return JSON.stringify({connected: Wind.connected, hasWind: Wind.hasWind, hours: Wind.outlook.length,
                                    stations: app.stations.length,
                                    nearest: app.stations.length ? app.stations[0].s.id : "",
-                                   note: app.stationsNote, opened: app.opened, night: app.theme.night});
+                                   note: app.stationsNote, opened: app.opened, night: app.theme.night,
+                                   log: Wind.lastLog, binary: Wind.binary});
         }
         function night(): void { app.theme.night = !app.theme.night; }
         function scroll(rows: int): void { app.scroll(rows); }
@@ -205,8 +212,7 @@ Item {
                     Label {
                         width: parent.width
                         text: {
-                            if (Wind.incompatible) return "omawind speaks another protocol version";
-                            if (!Wind.connected) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
+                            if (!Wind.connected || Wind.incompatible) return app.engineStatus;
                             if (!app.here) return "Wind";
                             if (app.here.at === "home") return "Wind at home";
                             return app.here.stale ? "Wind where the boat was last seen" : "Wind at the boat";
@@ -234,7 +240,7 @@ Item {
                         width: parent.width
                         visible: text !== ""
                         text: {
-                            if (!Wind.connected) return Wind.waited && Wind.lastLog ? Wind.lastLog : "";
+                            if (!Wind.connected || Wind.incompatible) return "";
                             if (!app.here) return "";
                             if (!Wind.hasWind) return app.here.note || "";
                             return typeof app.here.pressureHpa === "number" ? app.here.pressureHpa.toFixed(1) + " hPa at sea level" : "";
@@ -421,6 +427,28 @@ Item {
                     anchors { right: parent.right; rightMargin: 14; verticalCenter: parent.verticalCenter }
                     text: "Not for navigation"
                     opacity: 0.65
+                }
+            }
+
+            Rectangle {
+                visible: !Wind.connected && (Wind.waited || Wind.incompatible)
+                z: 2
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 48, engineNoticeText.implicitWidth + 36)
+                height: engineNoticeText.implicitHeight + 28
+                color: app.theme.background
+                border.width: 1
+                border.color: app.theme.foreground
+                radius: 3
+                Label {
+                    id: engineNoticeText
+                    anchors.centerIn: parent
+                    width: Math.min(implicitWidth, surface.width - 84)
+                    text: app.engineStatus
+                    elide: Text.ElideNone
+                    font.family: "monospace"
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
                 }
             }
         }
