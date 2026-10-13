@@ -1,8 +1,7 @@
 //! The boat's position from omakeel: its socket and `state` messages,
 //! version 1, as omakeel's docs/protocol.md describes them.
 
-use omakeel_protocol::Message;
-use serde_json::Value;
+use omakeel_protocol::{Message, ReadError};
 use std::path::PathBuf;
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, BufReader},
@@ -57,42 +56,9 @@ pub fn read(line: &str) -> Option<Update> {
             Some(Update::Boat(boat))
         }
         Ok(Some(Message::Hello { .. } | Message::Targets { .. })) | Ok(None) => None,
-        // `None` keeps the last fix. A line the crate rejects still has to
-        // clear the boat, or name a version, the way the field walk did.
-        Err(_) => read_rejected(line),
+        Err(ReadError::Version { found: Some(v) }) => Some(Update::Incompatible(v)),
+        Err(ReadError::NotJson | ReadError::Version { found: None }) => None,
     }
-}
-
-fn read_rejected(line: &str) -> Option<Update> {
-    let m: Value = serde_json::from_str(line).ok()?;
-    let v = m.get("v")?.as_u64()?;
-    if v != 1 {
-        return Some(Update::Incompatible(v));
-    }
-    if m.get("type")?.as_str()? != "state" {
-        return None;
-    }
-    let fix = m.get("fix")?;
-    let status = fix.get("status").and_then(Value::as_str).unwrap_or("none");
-    let (lat, lon) = (
-        fix.get("lat").and_then(Value::as_f64),
-        fix.get("lon").and_then(Value::as_f64),
-    );
-    let boat = match (lat, lon) {
-        (Some(lat), Some(lon))
-            if status != "none"
-                && (-90.0..=90.0).contains(&lat)
-                && (-180.0..=180.0).contains(&lon) =>
-        {
-            Some(Boat {
-                lat,
-                lon,
-                current: status == "ok",
-            })
-        }
-        _ => None,
-    };
-    Some(Update::Boat(boat))
 }
 
 /// Follows omakeel for as long as the receiver lives, reconnecting every
@@ -138,6 +104,7 @@ pub async fn follow(path: PathBuf, tx: mpsc::Sender<Update>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     #[test]
     fn reads_the_fix_from_omakeel_state() {
