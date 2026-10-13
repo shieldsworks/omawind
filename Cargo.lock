@@ -50,7 +50,7 @@ dependencies = [
 [[package]]
 name = "omakeel-protocol"
 version = "0.1.0"
-source = "git+https://github.com/shieldsworks/omakeel#648a23b251ec9ae77e6532014eca0a823d044ee4"
+source = "git+https://github.com/shieldsworks/omakeel?rev=96787eb5813960404dd2b5fce165b750801c1430#96787eb5813960404dd2b5fce165b750801c1430"
 dependencies = [
  "serde",
  "serde_json",
