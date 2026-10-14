@@ -24,29 +24,36 @@ Preconditions:
 - **Proof.** `record` saves the command, stdout, stderr, and the exit code to `$run/artifacts/verify/decode-f01/` and `$run/artifacts/verify/decode-missing/`.
 
 ```sh
-set -euo pipefail
-[[ -n ${run:-} && -d $run ]]
-record decode-f01 env -u OMAWIND_CONFIG \
-  HOME="$run/home" \
-  XDG_CACHE_HOME="$run/cache" \
-  XDG_CONFIG_HOME="$run/config" \
-  XDG_RUNTIME_DIR="$run" \
-  ./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2
-[[ $(cat "$run/artifacts/verify/decode-f01/exit-code.txt") -eq 0 ]]
-[[ ! -e $run/artifacts/verify/decode-f01/stderr.txt ]]
-got=$(awk '{print $1}' "$run/artifacts/verify/decode-f01/stdout.txt")
-want=$(printf '%s\n' GUST MSLMA UGRD VGRD)
-[[ $got == "$want" ]]
-grep -F 'grid 82×88' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null
-grep -F 'valid 2026-09-14T04:00:00Z' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null
-record decode-missing env -u OMAWIND_CONFIG \
-  HOME="$run/home" \
-  XDG_CACHE_HOME="$run/cache" \
-  XDG_CONFIG_HOME="$run/config" \
-  XDG_RUNTIME_DIR="$run" \
-  ./target/debug/omawind decode "$run/missing.grib2"
-[[ $(cat "$run/artifacts/verify/decode-missing/exit-code.txt") -ne 0 ]]
-grep -F 'missing.grib2' "$run/artifacts/verify/decode-missing/stderr.txt" >/dev/null
+omawind_verify_decode() {
+  local opts got want
+  opts=$(set +o)
+  trap 'eval "$opts"; trap - RETURN' RETURN
+  set +e
+  set -o pipefail
+  [[ -n ${run:-} && -d $run ]] || return 1
+  record decode-f01 env -u OMAWIND_CONFIG \
+    HOME="$run/home" \
+    XDG_CACHE_HOME="$run/cache" \
+    XDG_CONFIG_HOME="$run/config" \
+    XDG_RUNTIME_DIR="$run" \
+    ./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2 || return 1
+  [[ $(cat "$run/artifacts/verify/decode-f01/exit-code.txt") -eq 0 ]] || return 1
+  [[ ! -e $run/artifacts/verify/decode-f01/stderr.txt ]] || return 1
+  got=$(awk '{print $1}' "$run/artifacts/verify/decode-f01/stdout.txt") || return 1
+  want=$(printf '%s\n' GUST MSLMA UGRD VGRD)
+  [[ $got == "$want" ]] || return 1
+  grep -F 'grid 82×88' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null || return 1
+  grep -F 'valid 2026-09-14T04:00:00Z' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null || return 1
+  record decode-missing env -u OMAWIND_CONFIG \
+    HOME="$run/home" \
+    XDG_CACHE_HOME="$run/cache" \
+    XDG_CONFIG_HOME="$run/config" \
+    XDG_RUNTIME_DIR="$run" \
+    ./target/debug/omawind decode "$run/missing.grib2" || return 1
+  [[ $(cat "$run/artifacts/verify/decode-missing/exit-code.txt") -ne 0 ]] || return 1
+  grep -F 'missing.grib2' "$run/artifacts/verify/decode-missing/stderr.txt" >/dev/null || return 1
+}
+omawind_verify_decode
 ```
 
 ## Gotchas
