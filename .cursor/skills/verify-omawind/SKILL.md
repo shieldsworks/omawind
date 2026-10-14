@@ -15,7 +15,9 @@ Run the drive in a bash you start for that purpose. Do not source `drive.sh` and
 env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh
 ```
 
-Bash reads `BASH_ENV` before the script. `env -u BASH_ENV` clears it. A `BASH_ENV` file that runs `exit 0` ends the process before `drive.sh` starts, and the script never gets a chance to trap that. Do not source `drive.sh`.
+Bash reads `BASH_ENV` before the script. `env -u BASH_ENV` clears it. A `BASH_ENV` file that runs `exit 0` ends the process before `drive.sh` starts, and the script never gets a chance to trap that. Do not source `drive.sh`. If the script does start with `BASH_ENV` set and `unset` fails, it exits 1. If `unset` works, it re-execs with `env -u BASH_ENV bash --noprofile --norc`. A run that prints no `evidence:` line is not a success.
+
+`scripts/check-drive.sh` executes that command. `scripts/verify.sh` runs it.
 
 That process is the whole drive. It sets `set -euo pipefail` and `set -m`. On EXIT, INT, and TERM it ignores further INT and TERM, signals every process group it started with TERM and then KILL, copies the artifacts out, and deletes the run directory only after that copy includes a marker for this run. The shell that started it is not the shell those options and traps belong to.
 
@@ -75,6 +77,6 @@ The evidence directory is created before the engine starts. The EXIT trap copies
 
 ## Cleanup
 
-The trap is the cleanup. It runs on a normal exit, on Ctrl-C, and on TERM. The first thing it does is ignore INT and TERM, so a second Ctrl-C does not leave the engine or the window running. It signals every recorded process group with TERM, then KILL, with no sleep between those two signals. `./run.sh` is started with `setsid` in its own session, and the drive keeps that process group id after the leader exits. A child reparented to pid 1 is still in that group, and `kill -- -pgid` reaches it. After the signals, the drive checks `pgrep -g` for each group and kills any process whose cwd, command, or `XDG_RUNTIME_DIR` is under `$run`. It copies the artifacts, checks the marker, and only then deletes the run directory. The `evidence:` line is the last line it prints.
+The trap is the cleanup. It runs on a normal exit, on Ctrl-C, and on TERM. The INT trap and the TERM trap ignore both signals before they exit, so a flood cannot cut the cleanup short. The drive records every session id it starts, and every setsid child it can see, including the detached engine `ui/Wind.qml` starts with `env -C $HOME`. The window stop and the final stop both signal those sessions with TERM and then KILL, with no sleep between the two signals. A child reparented to pid 1 stays in its session, and signaling the session reaches a member that has left the original process group. The drive also reads `/proc/$pid/environ` with `grep -z -F -q` and no pipeline. `grep -q` exits before `tr` finishes, and under `pipefail` that pipeline's status is 141, which used to hide a process whose environ is larger than the pipe. It copies the artifacts, checks the marker, and only then deletes the run directory. The `evidence:` line is the last line it prints.
 
 When omawind's commands or the lines it prints change, run `/maintain-verification-skill` over this directory.

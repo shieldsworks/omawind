@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 if [[ -n ${BASH_ENV:-} ]]; then
-  unset BASH_ENV
-  exec bash --noprofile --norc "$0" "$@"
+  if ! unset BASH_ENV; then
+    exit 1
+  fi
+  exec env -u BASH_ENV bash --noprofile --norc "$0" "$@"
 fi
 
 seamed=0
@@ -27,7 +29,9 @@ launch_n=0
 copy_failed=0
 kept_run=
 all_pgids=
+all_sids=
 self_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
+self_sid=$(ps -o sid= -p $$ | tr -d ' ')
 started_pid=
 
 if [[ -n ${EVIDENCE_DIR:-} ]]; then
@@ -39,18 +43,35 @@ fi
 
 add_pgid() {
   local pgid=${1:-}
-  [[ -n $pgid && $pgid != "$self_pgid" ]] || return 0
+  [[ $pgid =~ ^[0-9]+$ && $pgid != "$self_pgid" && $pgid -gt 1 ]] || return 0
   case " $all_pgids " in
     *" $pgid "*) ;;
     *) all_pgids="$all_pgids $pgid" ;;
   esac
 }
 
-note_tree() {
-  local pid=${1:-} child pgid
-  [[ -n $pid ]] || return 0
+add_sid() {
+  local sid=${1:-}
+  [[ $sid =~ ^[0-9]+$ && $sid != "$self_sid" && $sid -gt 1 ]] || return 0
+  case " $all_sids " in
+    *" $sid "*) ;;
+    *) all_sids="$all_sids $sid" ;;
+  esac
+}
+
+note_pid() {
+  local pid=${1:-} pgid sid
+  [[ $pid =~ ^[0-9]+$ && $pid != "$$" ]] || return 0
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+  sid=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
   add_pgid "$pgid"
+  add_sid "$sid"
+}
+
+note_tree() {
+  local pid=${1:-} child
+  [[ -n $pid ]] || return 0
+  note_pid "$pid"
   kill -0 "$pid" 2>/dev/null || return 0
   for child in $(ps -o pid= --ppid "$pid" 2>/dev/null || true); do
     note_tree "$child"
@@ -68,19 +89,30 @@ start_session() {
   fi
   started_pid=$!
   set -m
-  add_pgid "$started_pid"
+  note_pid "$started_pid"
 }
 
-signal_pgids() {
-  local sig=$1 pgid
-  shift
-  for pgid in "$@"; do
-    [[ -n $pgid && $pgid != "$self_pgid" ]] || continue
+engine_sid() {
+  [[ -n ${engine_pid:-} ]] || return 0
+  ps -o sid= -p "$engine_pid" 2>/dev/null | tr -d ' ' || true
+}
+
+signal_recorded() {
+  local sig=$1 spare=${2:-} pgid sid pid
+  for pgid in $all_pgids; do
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
     kill "-$sig" -- "-$pgid" 2>/dev/null || true
+  done
+  for sid in $all_sids; do
+    [[ $sid =~ ^[0-9]+$ && $sid != "$self_sid" && $sid != "$spare" && $sid -gt 1 ]] || continue
+    for pid in $(ps -o pid= -s "$sid" 2>/dev/null || true); do
+      [[ $pid == "$$" ]] && continue
+      kill "-$sig" "$pid" 2>/dev/null || true
+    done
   done
 }
 
-sweep_run() {
+sweep_record() {
   local pid cwd cmd envfile
   [[ -n ${run:-} && -d $run ]] || return 0
   for pid in /proc/[0-9]*; do
@@ -90,51 +122,49 @@ sweep_run() {
     cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
     envfile=/proc/$pid/environ
     if [[ $cwd == "$run" || $cwd == "$run"/* || $cmd == *"$run"* ]]; then
-      kill -KILL "$pid" 2>/dev/null || true
+      note_pid "$pid"
       continue
     fi
-    if [[ -r $envfile ]] && tr '\0' '\n' <"$envfile" | grep -F -q "XDG_RUNTIME_DIR=$run"; then
-      kill -KILL "$pid" 2>/dev/null || true
+    if [[ -r $envfile ]] && grep -z -F -q -- "XDG_RUNTIME_DIR=$run" "$envfile"; then
+      note_pid "$pid"
     fi
   done
 }
 
 stop_all() {
   local pgid pid
-  local -a ids=()
   note_tree "${engine_pid:-}"
   note_tree "${window_pid:-}"
   note_tree "${grim_pid:-}"
+  sweep_record
+  signal_recorded TERM
+  signal_recorded KILL
   for pgid in $all_pgids; do
-    ids+=("$pgid")
-  done
-  signal_pgids TERM "${ids[@]}"
-  signal_pgids KILL "${ids[@]}"
-  for pgid in "${ids[@]}"; do
     for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
       kill -KILL "$pid" 2>/dev/null || true
     done
   done
-  sweep_run
   engine_pid=
   window_pid=
   window_pgid=
   grim_pid=
   grim_pgid=
   all_pgids=
+  all_sids=
 }
 
 stop_groups() {
-  local pgid pid
-  local -a ids=()
+  local pgid pid spare
+  spare=$(engine_sid)
   for pgid in "$@"; do
-    [[ -n $pgid && $pgid != "$self_pgid" ]] || continue
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
     note_tree "$pgid"
-    ids+=("$pgid")
   done
-  signal_pgids TERM "${ids[@]}"
-  signal_pgids KILL "${ids[@]}"
-  for pgid in "${ids[@]}"; do
+  sweep_record
+  signal_recorded TERM "$spare"
+  signal_recorded KILL "$spare"
+  for pgid in "$@"; do
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
     for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
       kill -KILL "$pid" 2>/dev/null || true
     done
@@ -183,12 +213,16 @@ finish() {
   if [[ $copy_failed -eq 1 && $status -eq 0 ]]; then
     status=1
   fi
-  printf 'evidence: %s\n' "$evidence"
+  if [[ -z ${evidence:-} || ! -d ${evidence:-} ]]; then
+    [[ $status -ne 0 ]] || status=1
+  else
+    printf 'evidence: %s\n' "$evidence"
+  fi
   exit "$status"
 }
 trap finish EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'trap "" INT TERM; exit 130' INT
+trap 'trap "" INT TERM; exit 143' TERM
 
 oma() {
   env -u OMAWIND_CONFIG \
@@ -468,7 +502,7 @@ drive_window() {
         grim_pid=$!
         grim_pgid=$grim_pid
         set -m
-        add_pgid "$grim_pgid"
+        note_pid "$grim_pid"
         for _ in $(seq 10); do
           note_tree "$grim_pid"
           pgrep -P "$grim_pid" >/dev/null 2>&1 && break
@@ -606,12 +640,15 @@ drive_hold() {
 
   hold_phase=groups
   trap 'hold_phase=go' USR1
+  start_session "$run/engine.log" "$run/engine.log" sleep 600
+  engine_pid=$started_pid
   start_session "$run/window.log" "$run/window.log" sleep 600
   window_pid=$started_pid
   window_pgid=$started_pid
   plant_detached "$run/plant-a"
   printf 'observe-groups\n'
   printf 'window %s\n' "$window_pid"
+  printf 'engine %s\n' "$engine_pid"
   cat "$run/plant-a"
   while [[ $hold_phase == groups ]]; do
     sleep 0.05 || true
@@ -620,13 +657,16 @@ drive_hold() {
   stop_groups "$window_pgid"
   window_pid=
   window_pgid=
+  hold_phase=groups
+  trap 'hold_phase=go' USR1
   printf 'groups-stopped\n'
+  while [[ $hold_phase == groups ]]; do
+    sleep 0.05 || true
+  done
+  trap - USR1
 
-  start_session "$run/engine.log" "$run/engine.log" sleep 600
-  engine_pid=$started_pid
   plant_detached "$run/plant-b"
   printf 'ready\n'
-  printf 'engine %s\n' "$engine_pid"
   cat "$run/plant-b"
   wait "$engine_pid"
 }

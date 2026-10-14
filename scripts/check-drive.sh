@@ -201,6 +201,13 @@ def adversarial(lead, sib, run, bash_pid):
     return problems
 
 
+def describe(pid):
+    info = proc_fields(pid)
+    if not info:
+        return f"{pid} dead"
+    return f"{pid} cwd={info['cwd']} cmd={info['cmd'][:160]!r} env={len(info['env'])}"
+
+
 def pids_touching(run):
     token = f"XDG_RUNTIME_DIR={run}".encode()
     found = []
@@ -356,13 +363,15 @@ def run_hold():
             return []
         run = runs[0]
         windows = parse_kv(text, "window")
+        engines = parse_kv(text, "engine")
         leaders = parse_kv(text, "leader")
         siblings = parse_kv(text, "sibling")
-        if not (windows and leaders and siblings):
+        if not (windows and engines and leaders and siblings):
             record("setsid survivor", False, f"missing plants in {text!r}")
             return [run]
-        window, leader, sibling = int(windows[0]), int(leaders[0]), int(siblings[0])
-        planted.extend([window, leader, sibling])
+        window, engine = int(windows[0]), int(engines[0])
+        leader, sibling = int(leaders[0]), int(siblings[0])
+        planted.extend([window, leader, sibling, engine])
         lead, sib = wait_planted(leader, sibling, run)
         shape = adversarial(lead, sib, run, session.proc.pid)
         if shape:
@@ -376,24 +385,30 @@ def run_hold():
         touching = pids_touching(run)
         record(
             "setsid survivor",
-            groups_dead and not touching,
-            f"groups-stopped leader {proc_alive(leader)} sibling {proc_alive(sibling)} touching {touching}",
+            groups_dead and not touching and proc_alive(engine),
+            "groups-stopped leader %s sibling %s engine %s touching %s"
+            % (
+                proc_alive(leader),
+                proc_alive(sibling),
+                proc_alive(engine),
+                [describe(pid) for pid in touching],
+            ),
         )
+        os.kill(session.proc.pid, signal.SIGUSR1)
         deadline = time.time() + 5
-        while session.text().count("\nsibling ") < 2 and session.text().count("sibling ") < 2 and time.time() < deadline:
+        while session.text().count("sibling ") < 2 and time.time() < deadline:
             session.read_for(0.1)
         text = session.text()
         if "ready" not in text:
             record("sigint flood", False, "hold did not reach ready")
             return [run]
-        engines = parse_kv(text, "engine")
         leaders = parse_kv(text, "leader")
         siblings = parse_kv(text, "sibling")
-        if len(engines) < 1 or len(leaders) < 2 or len(siblings) < 2:
+        if len(leaders) < 2 or len(siblings) < 2:
             record("sigint flood", False, f"ready plants missing in {text!r}")
             return [run]
-        engine, leader, sibling = int(engines[0]), int(leaders[1]), int(siblings[1])
-        planted.extend([engine, leader, sibling])
+        leader, sibling = int(leaders[1]), int(siblings[1])
+        planted.extend([leader, sibling])
         lead, sib = wait_planted(leader, sibling, run)
         shape = adversarial(lead, sib, run, session.proc.pid)
         if shape or not proc_alive(engine):
