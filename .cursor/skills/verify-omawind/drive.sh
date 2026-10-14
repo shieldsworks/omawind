@@ -27,7 +27,6 @@ grim_pid=
 grim_pgid=
 launch_n=0
 copy_failed=0
-kept_run=
 all_pgids=
 all_sids=
 self_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
@@ -192,7 +191,6 @@ archive_current() {
     rm -rf "$old"
   else
     copy_failed=1
-    kept_run=$run
     printf 'copy failed, run dir kept: %s\n' "$run" >&2
     run=
   fi
@@ -587,10 +585,19 @@ drive_window() {
 plant_detached() {
   local dest=$1
   python3 - "$run" "$dest" <<'PY'
-import os, sys
+import os, signal, sys
 
 run, dest = sys.argv[1], sys.argv[2]
-big = "B" * 130000
+# One argument cannot exceed MAX_ARG_STRLEN (128KiB). The needle is first.
+# Eight 100000-byte pads are larger than a pipe plus one grep read, so
+# `tr | grep -q` under pipefail is 141.
+pad = "B" * 100000
+leader_env = {"XDG_RUNTIME_DIR": run}
+for i in range(8):
+    leader_env[f"P{i:02d}"] = pad
+leader_env["PATH"] = "/usr/bin:/bin"
+leader_env["HOME"] = "/tmp"
+small = {"PATH": "/usr/bin:/bin", "HOME": "/tmp"}
 read_fd, write_fd = os.pipe()
 if os.fork() > 0:
     os.close(write_fd)
@@ -607,25 +614,18 @@ if os.fork() > 0:
 os.close(read_fd)
 os.setsid()
 os.chdir("/tmp")
+# SIG_IGN is preserved across exec. These plants die on KILL, not TERM.
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
 leader = os.getpid()
 sibling = os.fork()
 if sibling == 0:
     os.setpgid(0, 0)
     os.chdir("/tmp")
-    os.execvpe("sleep", ["sleep", "600"], {"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
+    os.execvpe("sleep", ["sleep", "600"], small)
 os.setpgid(sibling, sibling)
 os.write(write_fd, f"leader {leader}\nsibling {sibling}\n".encode())
 os.close(write_fd)
-os.execvpe(
-    "sleep",
-    ["sleep", "600"],
-    {
-        "PATH": "/usr/bin:/bin",
-        "HOME": "/tmp",
-        "XDG_RUNTIME_DIR": run,
-        "BIG": big,
-    },
-)
+os.execvpe("sleep", ["sleep", "600"], leader_env)
 PY
 }
 
@@ -640,8 +640,34 @@ drive_hold() {
 
   hold_phase=groups
   trap 'hold_phase=go' USR1
-  start_session "$run/engine.log" "$run/engine.log" sleep 600
+  cat >"$run/engine-leader.py" <<'PY'
+import os
+import sys
+
+run, dest = sys.argv[1], sys.argv[2]
+os.chdir("/tmp")
+child = os.fork()
+if child == 0:
+    os.setpgid(0, 0)
+    os.chdir("/tmp")
+    os.execvpe(
+        "sleep",
+        ["sleep", "600"],
+        {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "XDG_RUNTIME_DIR": run},
+    )
+os.setpgid(child, child)
+with open(dest, "w", encoding="utf-8") as handle:
+    handle.write(f"{child}\n")
+os.execvpe("sleep", ["sleep", "600"], {"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
+PY
+  start_session "$run/engine.log" "$run/engine.log" \
+    python3 "$run/engine-leader.py" "$run" "$run/engine-child"
   engine_pid=$started_pid
+  for _ in $(seq 50); do
+    [[ -s $run/engine-child ]] && break
+    sleep 0.02
+  done
+  printf 'engine-child %s\n' "$(cat "$run/engine-child")"
   start_session "$run/window.log" "$run/window.log" sleep 600
   window_pid=$started_pid
   window_pgid=$started_pid
@@ -671,6 +697,30 @@ drive_hold() {
   wait "$engine_pid"
 }
 
+drive_archive() {
+  run=$(mktemp -d /tmp/omawind-verify.XXXXXX)
+  [[ $run == /* ]] || exit 1
+  mkdir -p "$run/home" "$run/artifacts/verify/hold"
+  printf 'hold\n' >"$run/artifacts/verify/hold/stdout.txt"
+  printf '0\n' >"$run/artifacts/verify/hold/exit-code.txt"
+  printf 'run %s\n' "$run"
+}
+
+drive_paint() {
+  run=$(mktemp -d /tmp/omawind-verify.XXXXXX)
+  [[ $run == /* ]] || exit 1
+  mkdir -p "$run/home" "$run/cache" "$run/config" "$run/omawind" "$run/artifacts/verify"
+  sock=$run/omawind/wind.sock
+  python3 - "$sock" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+PY
+  drive_window
+}
+
 drive_twice() {
   local prior
   launch
@@ -691,7 +741,7 @@ fi
 
 for feature in "$@"; do
   case $feature in
-    doctor | at | decode | serve | window | twice | hold) ;;
+    doctor | at | decode | serve | window | twice | hold | archive | paint) ;;
     *)
       printf 'unknown feature: %s\n' "$feature" >&2
       exit 2
@@ -706,6 +756,16 @@ fi
 
 if [[ $# -eq 1 && $1 == hold ]]; then
   drive_hold
+  exit 0
+fi
+
+if [[ $# -eq 1 && $1 == archive ]]; then
+  drive_archive
+  exit 0
+fi
+
+if [[ $# -eq 1 && $1 == paint ]]; then
+  drive_paint
   exit 0
 fi
 
