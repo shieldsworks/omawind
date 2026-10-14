@@ -38,8 +38,8 @@ Commands:
 - `scripts/verify.sh` is the single done command.
 
 To prove behavior end to end (the binary, driven the way a user drives it),
-use the verify skill at `.cursor/skills/verify/SKILL.md` and its feature map
-in `.cursor/skills/verify/features/`.
+use the verify skill at `.cursor/skills/verify-omawind/SKILL.md` and its feature map
+in `.cursor/skills/verify-omawind/features/`.
 
 ## The gates are not yours to move
 
