@@ -101,6 +101,8 @@ test -d "$evidence"
 
 Evidence stays under `$evidence`. `$run` is gone. Do not `pkill` by name.
 
+The `export` lines stay in the shell that ran them. After `$run` is removed, point `HOME` back at the real home before any later command. A stale `HOME` hides `~/.gitconfig` and makes the next `git push` ask for a username.
+
 On the 2026-10-14 run the pid was gone, the socket was gone, and `at-berkeley/stdout.txt` was still under `/tmp/omawind-verify-evidence`.
 
 When omawind's commands or the lines it prints change, run `/maintain-verification-skill` over this directory.
