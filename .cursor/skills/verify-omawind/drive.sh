@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 if [[ -n ${BASH_ENV:-} ]]; then
   if ! unset BASH_ENV; then
+    trap - EXIT
     exit 1
   fi
   exec env -u BASH_ENV bash --noprofile --norc "$0" "$@"
@@ -91,19 +92,30 @@ start_session() {
   note_pid "$started_pid"
 }
 
-engine_sid() {
-  [[ -n ${engine_pid:-} ]] || return 0
-  ps -o sid= -p "$engine_pid" 2>/dev/null | tr -d ' ' || true
+pgid_session() {
+  local pgid=$1 pid sid
+  for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
+    sid=$(ps -o sid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
+    if [[ -n $sid ]]; then
+      printf '%s\n' "$sid"
+      return 0
+    fi
+  done
+  return 1
 }
 
 signal_recorded() {
-  local sig=$1 spare=${2:-} pgid sid pid
+  local sig=$1 spare_pgid=${2:-} spare_sid=${3:-} pgid sid pid group_sid
   for pgid in $all_pgids; do
-    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare_pgid" ]] || continue
+    if [[ -n $spare_sid ]]; then
+      group_sid=$(pgid_session "$pgid" || true)
+      [[ $group_sid == "$spare_sid" ]] && continue
+    fi
     kill "-$sig" -- "-$pgid" 2>/dev/null || true
   done
   for sid in $all_sids; do
-    [[ $sid =~ ^[0-9]+$ && $sid != "$self_sid" && $sid != "$spare" && $sid -gt 1 ]] || continue
+    [[ $sid =~ ^[0-9]+$ && $sid != "$self_sid" && $sid != "$spare_sid" && $sid -gt 1 ]] || continue
     for pid in $(ps -o pid= -s "$sid" 2>/dev/null || true); do
       [[ $pid == "$$" ]] && continue
       kill "-$sig" "$pid" 2>/dev/null || true
@@ -153,17 +165,26 @@ stop_all() {
 }
 
 stop_groups() {
-  local pgid pid spare
-  spare=$(engine_sid)
+  local pgid pid spare_pgid spare_sid group_sid
+  spare_pgid=
+  spare_sid=
+  if [[ -n ${engine_pid:-} ]]; then
+    spare_pgid=$(ps -o pgid= -p "$engine_pid" 2>/dev/null | tr -d ' ' || true)
+    spare_sid=$(ps -o sid= -p "$engine_pid" 2>/dev/null | tr -d ' ' || true)
+  fi
   for pgid in "$@"; do
-    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare_pgid" ]] || continue
+    group_sid=$(pgid_session "$pgid" || true)
+    [[ -n $spare_sid && $group_sid == "$spare_sid" ]] && continue
     note_tree "$pgid"
   done
   sweep_record
-  signal_recorded TERM "$spare"
-  signal_recorded KILL "$spare"
+  signal_recorded TERM "$spare_pgid" "$spare_sid"
+  signal_recorded KILL "$spare_pgid" "$spare_sid"
   for pgid in "$@"; do
-    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare" ]] || continue
+    [[ -n $pgid && $pgid != "$self_pgid" && $pgid != "$spare_pgid" ]] || continue
+    group_sid=$(pgid_session "$pgid" || true)
+    [[ -n $spare_sid && $group_sid == "$spare_sid" ]] && continue
     for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
       kill -KILL "$pid" 2>/dev/null || true
     done
