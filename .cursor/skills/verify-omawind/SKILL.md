@@ -9,174 +9,37 @@ description: "Drive omawind the way a sailor does (the CLI, the engine socket, a
 
 ## Launch
 
-Run from the repo root, in bash. `at` and `decode` exit on their own. Build once, then start the offline engine. `omawind run` stays up. Give every run its own directory so two drives do not share a socket or a cache.
-
-Run the fences in this order, in one shell. Launch, doctor, the fences in `features/`, then cleanup.
-
-Each fence is one function. Sourcing the fence defines that function and calls it. The function writes `set +o` to a temporary file before it changes any option. After the function returns, the sourcing shell sources that file and returns the function's status, so the operator's options are back, including errexit when it was on. A failed check is `return 1`. With errexit off, the interactive shell keeps running. With errexit on, a failing `source` exits the shell, because that is errexit.
-
-A RETURN trap does not restore errexit. Bash discards an errexit change made inside the trap. `$(set +o)` does not record it either, because that command runs in a subshell. The file is written with `set +o >|` in the function, which is the shell whose options were in force.
-
-`set -e` is not used inside the fence. In interactive bash, `set -e` inside a function exits the whole shell on the failing command. `local -` does not prevent that. The function also turns nounset off after the file is written. An unset expansion under nounset aborts the function before the sourcing shell can restore options. The saved file turns nounset back on when it was on.
-
-Do not `export` `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, or `XDG_RUNTIME_DIR`. `config.rs` reads `OMAWIND_CONFIG` before those variables, so every omawind command also passes `-u OMAWIND_CONFIG`. The prefix on each command is `env -u OMAWIND_CONFIG HOME=... XDG_CACHE_HOME=... XDG_CONFIG_HOME=... XDG_RUNTIME_DIR=...`.
-
-`cargo` on `PATH` may be older than `Cargo.toml` `rust-version`. `mise exec -- cargo build --locked` uses the toolchain in `mise.toml`.
-
-`ui/Wind.qml` opens `$XDG_RUNTIME_DIR/omawind/wind.sock`. Bind the offline engine there, under `$run`, so the window attaches to this server.
+Run the drive in a bash you start for that purpose. Do not source `drive.sh` and do not paste it into the shell you are already using.
 
 ```sh
-omawind_verify_launch() {
-  local ready dest _
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  omawind_verify_stop() {
-    local dir=$1 pid _
-    [[ -n ${dir:-} && -f $dir/pid ]] || return 0
-    pid=$(cat "$dir/pid")
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-    fi
-    for _ in $(seq 50); do
-      if ! kill -0 "$pid" 2>/dev/null; then
-        wait "$pid" 2>/dev/null || true
-        return 0
-      fi
-      sleep 0.1
-    done
-    return 1
-  }
-  [[ -f Cargo.toml && -d tests/fixtures/hrrr ]] || return 1
-  mise install || return 1
-  mise exec -- cargo build --locked || return 1
-  if [[ -n ${_omawind_verify_run:-} ]]; then
-    omawind_verify_stop "$_omawind_verify_run" || return 1
-    case $_omawind_verify_run in
-      /tmp/omawind-verify.*)
-        if [[ -d $_omawind_verify_run ]]; then
-          rm -rf "$_omawind_verify_run" || return 1
-        fi
-        ;;
-    esac
-  fi
-  run=$(mktemp -d /tmp/omawind-verify.XXXXXX)
-  [[ $run == /* ]] || return 1
-  _omawind_verify_run=$run
-  trap "omawind_verify_stop $(printf '%q' "$run")" EXIT
-  mkdir -p "$run/home" "$run/cache" "$run/config" "$run/artifacts/verify" || return 1
-  sock=$run/omawind/wind.sock
-  if [[ -n ${EVIDENCE_DIR:-} ]]; then
-    mkdir -p "$EVIDENCE_DIR" || return 1
-    evidence=$(mktemp -d "$EVIDENCE_DIR/drive.XXXXXX")
-  else
-    evidence=$(mktemp -d /tmp/omawind-verify-evidence.XXXXXX)
-  fi
-  dest=$run/cache/omawind/hrrr/36.8000_-123.8000_38.8000_-121.6000/2026091403
-  mkdir -p "$dest" || return 1
-  cp tests/fixtures/hrrr/2026091403/f00.grib2 \
-    tests/fixtures/hrrr/2026091403/f01.grib2 \
-    tests/fixtures/hrrr/2026091403/f02.grib2 \
-    "$dest/" || return 1
-  pgrep -x omawind | sort >"$run/pids-before" || true
-  env -u OMAWIND_CONFIG \
-    HOME="$run/home" \
-    XDG_CACHE_HOME="$run/cache" \
-    XDG_CONFIG_HOME="$run/config" \
-    XDG_RUNTIME_DIR="$run" \
-    ./target/debug/omawind run --offline --socket "$sock" \
-    >"$run/engine.log" 2>&1 &
-  printf '%s\n' "$!" >"$run/pid" || return 1
-  disown "$!" 2>/dev/null || true
-  ready=0
-  for _ in $(seq 50); do
-    if [[ -S $sock ]]; then
-      ready=1
-      break
-    fi
-    sleep 0.1
-  done
-  [[ $ready -eq 1 ]] || return 1
-  record() {
-    local id=$1 dir code
-    shift
-    dir=$run/artifacts/verify/$id
-    mkdir -p "$dir" || return 1
-    printf '%q ' "$@" >"$dir/command.txt" || return 1
-    printf '\n' >>"$dir/command.txt" || return 1
-    set +e
-    "$@" >"$dir/stdout.txt" 2>"$dir/stderr.txt"
-    code=$?
-    printf '%s\n' "$code" >"$dir/exit-code.txt" || return 1
-    [[ -s $dir/stdout.txt ]] || rm -f "$dir/stdout.txt"
-    [[ -s $dir/stderr.txt ]] || rm -f "$dir/stderr.txt"
-    return 0
-  }
-}
-omawind_verify_launch
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh
 ```
 
-Ready when `$sock` is a socket and the pid in `$run/pid` is alive. `at` and `decode` do not open that socket. They still take the `env` prefix, with `HOME`, `XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` inside `$run`.
+That process is the whole drive. It sets `set -euo pipefail` and `set -m`. On EXIT, INT, and TERM it signals the engine and the window process group with TERM, then KILL, copies the artifacts out, and only then deletes the run directory. The shell that started it is not the shell those options and traps belong to.
 
-`mktemp` prints an absolute path. A relative `XDG_RUNTIME_DIR` makes `omawind run` exit even when `--socket` is set, because the default omakeel socket is still resolved. `$run` has to start with `/`.
+With no arguments the drive runs doctor, `at`, decode, serve, and window. Name the features you want:
 
-`record` writes the command, stdout, stderr, and the exit code under `$run/artifacts/verify/<id>/`. It removes an empty stdout or stderr file so a later check can require every copied file to be non-empty. A missing stdout file means the command printed nothing there. `record` does not turn `set -e` back on.
+```sh
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh doctor at decode serve
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh window
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh twice
+```
 
-The EXIT trap calls `omawind_verify_stop` with the directory from this launch, quoted into the trap when it is installed. It does not expand `$run` when the shell exits. A second launch stops that engine and removes that run directory before it creates a new one, so the first process is not left running and the first directory is not left behind. The directory is removed only when its path is `/tmp/omawind-verify.*` and the stop succeeded. Cleanup runs `trap - EXIT` after the engine is dead.
+`twice` launches a second engine in the same process. It copies the first run's artifacts into the evidence directory before it deletes that run directory.
+
+The drive prints `evidence: /tmp/omawind-verify-evidence.XXXXXX` as it exits. That directory remains. The run directory does not.
+
+`cargo` on `PATH` may be older than `Cargo.toml` `rust-version`. The drive prepends `$HOME/.local/bin` and runs `mise exec -- cargo build --locked`. `bash --noprofile --norc` still inherits the environment of the shell that started it, including `PATH`.
+
+Do not `export` `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, or `XDG_RUNTIME_DIR` from the shell that starts the drive. `config.rs` reads `OMAWIND_CONFIG` before those variables, so every omawind command inside the drive uses `env -u OMAWIND_CONFIG` and passes `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` on that command. The engine probe uses `XDG_RUNTIME_DIR=$run/engine-probe-runtime`, not the runtime directory of the shell that started the drive.
+
+`ui/Wind.qml` opens `$XDG_RUNTIME_DIR/omawind/wind.sock`. The offline engine binds `$run/omawind/wind.sock`, and `./run.sh` gets `XDG_RUNTIME_DIR=$run`.
 
 ## Doctor
 
-Run this before the first drive, and again when anything looks off. A missing socket or a dead pid returns 1. `test -S && echo` returns 0 when the socket is missing, so the check is an `if`.
+Doctor runs before the other features inside the drive. A missing socket or a dead pid exits non-zero.
 
-```sh
-omawind_verify_doctor() {
-  local pid
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  [[ -n ${run:-} && -n ${sock:-} ]] || return 1
-  record doctor env -u OMAWIND_CONFIG \
-    HOME="$run/home" \
-    XDG_CACHE_HOME="$run/cache" \
-    XDG_CONFIG_HOME="$run/config" \
-    XDG_RUNTIME_DIR="$run" \
-    ./target/debug/omawind --version || return 1
-  cat "$run/artifacts/verify/doctor/stdout.txt" || return 1
-  [[ $(cat "$run/artifacts/verify/doctor/exit-code.txt") -eq 0 ]] || return 1
-  if [[ ! -S $sock ]]; then
-    printf 'socket missing: %s\n' "$sock" >&2
-    return 1
-  fi
-  printf 'socket exists\n'
-  pid=$(cat "$run/pid") || return 1
-  if ! kill -0 "$pid" 2>/dev/null; then
-    printf 'pid %s is dead\n' "$pid" >&2
-    return 1
-  fi
-  printf 'pid %s alive\n' "$pid"
-}
-omawind_verify_doctor
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
-```
-
-The version line is this checkout's binary. The pid is the process this run started. The socket is `$run/omawind/wind.sock`. Connect only to that socket. Do not drive an omawind the user already has running. Do not read `~/.config/omawind` or `~/.cache/omawind`.
+The version line is this checkout's binary. The pid is the process this drive started. The socket is `$run/omawind/wind.sock`. The drive does not read `~/.config/omawind` or `~/.cache/omawind`.
 
 Observed on 2026-10-14.
 
@@ -190,106 +53,26 @@ The pid differs every launch.
 
 ## Drive
 
-Follow `features/`. Start at `features/README.md`. A proof that drives one convenient entry point is incomplete when the map lists others.
+Follow `features/`. Start at `features/README.md`.
 
-- A sailor's terminal is `./target/debug/omawind at` and `./target/debug/omawind decode`, each with the `env` prefix.
-- An app reads `$sock`, one JSON object per line, as `docs/protocol.md` describes. The server pushes three lines on connect. The reader is in `features/serve-forecast.md`.
-- The window is `./run.sh`, which execs `quickshell -p ui/shell.qml`. The window fence always writes `window-painted`. When `quickshell` is not on `PATH`, that directory names the missing command and the fence returns 1. When it is, the fence backgrounds `./run.sh` with no `setsid`, captures with `grim`, and stops it.
+- A sailor's terminal is `./target/debug/omawind at` and `./target/debug/omawind decode`.
+- An app reads the socket, one JSON object per line, as `docs/protocol.md` describes. The server pushes three lines on connect. The reader is in `features/serve-forecast.md`.
+- The window is `./run.sh`, which execs `quickshell -p ui/shell.qml`. The drive always writes `window-painted`. A `miss.txt` there or under `window-engine` makes the window feature exit non-zero.
 
-`omawind fetch` and `omawind stations` call NOAA. They are not in this map. Drive them only when the task is that network path, and say that you did. The CLI has no flag that points them at `tests/fixtures/`.
+`omawind fetch` and `omawind stations` call NOAA. They are not in this map. Drive them only when the task is that network path, and say that you did.
 
 ## Evidence
 
-`$evidence` is one directory per drive, created in the launch fence. Cleanup copies `$run/artifacts/verify/` there before it deletes `$run`.
+The evidence directory is created before the engine starts. The EXIT trap copies `$run/artifacts` there before it deletes `$run`. A second launch in the same process does the same copy before it deletes the first directory.
 
-- Save the command, stdout, stderr, and the exit code. `record` does that.
-- For the socket, save the three lines the server pushes on connect. The reader sends no request.
-- The recorded HRRR files stand in for NOMADS. The cache reader that `omawind fetch` fills is the one that loads them. `--offline` must not open a connection to NOMADS. The proof is the state line `"fetch":{"status":"off"}` and the stations line `"status":"off"`. An empty `$run/engine.log` does not show that. The engine does not write those URLs to the log.
-- `window-painted` is always written. On a Hyprland session with Quickshell, it is the `grim` image. When `quickshell` or `grim` is missing, the directory names that command and `miss.txt` records the miss. A `miss.txt` in `window-painted` or `window-engine` makes the window fence return 1. Do not call that file a screenshot. `window-engine` is a pass only when stdout contains `All engine-path checks passed.` and does not contain the Qt6 line. The Qt6 line `Qt6 QML dev packages not installed. Skipped.` is a miss, written to `miss.txt`, even when `All engine-path checks passed.` is also present, and even though `scripts/verify.sh` exits 0.
-- If a path cannot be reached, write the command and the missing precondition. Do not mark that path passed.
+- `record` saves the command, stdout, stderr, and the exit code under `verify/<id>/`. An empty stdout or stderr file is removed.
+- For the socket, the three lines the server pushes on connect are in `verify/serve-forecast/`. The reader sends no request.
+- The recorded HRRR files stand in for NOMADS. `--offline` must not open a connection to NOMADS. The proof is the state line `"fetch":{"status":"off"}` and the stations line `"status":"off"`.
+- `window-painted` is always written. On a Hyprland session with Quickshell, it is the `grim` image. When `quickshell` or `grim` is missing, the directory names that command and `miss.txt` records the miss. Do not call that file a screenshot. `window-engine` passes only when stdout or stderr contains `All engine-path checks passed.` and neither stream contains `Qt6 QML dev packages not installed. Skipped.` The drive searches both streams. `scripts/verify.sh` still exits 0 on that skip.
+- The engine transcript is produced with `env -u OMAWIND_CONFIG` and `XDG_RUNTIME_DIR` set to `$run/engine-probe-runtime`.
 
 ## Cleanup
 
-Copy the evidence out first. Then stop only the pid this run wrote. Confirm that pid is dead before deleting `$run`. Then confirm `pgrep -x omawind` shows no pid that was not already in `$run/pids-before`. A failed window connect starts `omawind run` with no `--offline`. That check is how you see the stray. Do not `pkill` by name. After the pid is dead and the evidence checks pass, clear the EXIT trap.
-
-```sh
-omawind_verify_cleanup() {
-  local extra found f d
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  [[ -n ${run:-} && -n ${evidence:-} && -d $run ]] || return 1
-  mkdir -p "$evidence" || return 1
-  cp -a "$run/artifacts/verify/." "$evidence/" || return 1
-  omawind_verify_stop "$run" || return 1
-  pgrep -x omawind | sort >"$run/pids-after" || true
-  extra=$(comm -13 "$run/pids-before" "$run/pids-after" || true)
-  if [[ -n $extra ]]; then
-    printf 'an omawind process was started outside this run:\n%s\n' "$extra" >&2
-    return 1
-  fi
-  found=0
-  while IFS= read -r -d '' f; do
-    found=1
-    if [[ ! -s $f ]]; then
-      printf 'empty evidence: %s\n' "$f" >&2
-      return 1
-    fi
-  done < <(find "$evidence" -type f -print0)
-  [[ $found -eq 1 ]] || { printf 'evidence directory has no files\n' >&2; return 1; }
-  while IFS= read -r -d '' d; do
-    [[ -s $d/exit-code.txt ]] || { printf 'missing exit code: %s\n' "$d" >&2; return 1; }
-    [[ -s $d/stdout.txt || -s $d/stderr.txt ]] || {
-      printf 'empty evidence: %s\n' "$d" >&2
-      return 1
-    }
-  done < <(find "$evidence" -mindepth 1 -maxdepth 1 -type d -print0)
-  trap - EXIT
-  unset _omawind_verify_run
-  rm -rf "$run" || return 1
-  [[ -d $evidence ]] || return 1
-}
-omawind_verify_cleanup
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
-```
-
-Evidence stays under `$evidence`. `$run` is gone. The EXIT trap is gone. The fences do not export `HOME` or the XDG variables, so those names in this shell are the ones you started with.
-
-On the 2026-10-14 run the pid was gone, the socket was gone, and `at-berkeley/stdout.txt` was still under the evidence directory.
+The trap is the cleanup. It runs on a normal exit, on Ctrl-C, and on TERM. It signals each process group the drive started (`kill -- -pgid`), waits, then sends KILL. It copies the artifacts, then deletes the run directory. It does not `pkill` by name.
 
 When omawind's commands or the lines it prints change, run `/maintain-verification-skill` over this directory.
-
-## Helpers
-
-This skill ships no script. The socket reader is the Python block in `features/serve-forecast.md`. The window's engine-path check is the repo's own probe.
-
-```sh
-omawind_verify_engine_probe() {
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  scripts/verify.sh engine || return 1
-}
-omawind_verify_engine_probe
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
-```
-
-`scripts/verify.sh` lines 68 to 70 assign `XDG_RUNTIME_DIR` when it is unset, using `/tmp/runtime-omawind-verify`, then `mkdir` that directory and `chmod 700` it. When the variable is already set, the script creates that directory instead. The script is a subprocess, so the assignment does not stay in your shell. The directory does.
-
-The probe substitutes a stub for `omawind run`. It does not fetch from NOAA. When Qt6 is missing it prints `Qt6 QML dev packages not installed. Skipped.` and exits 0. The window fence records that line in `miss.txt` and returns 1. That skip is not a pass of `features/window.md`, including when `All engine-path checks passed.` is in the same transcript. A pass of the engine path is the line `All engine-path checks passed.` and no Qt6 skip line.

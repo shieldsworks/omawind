@@ -18,11 +18,10 @@
 
 Preconditions:
 
-- Launch from `../SKILL.md`, including `--offline` and `--socket "$sock"`. `$sock` is `$run/omawind/wind.sock`.
-- Doctor passes.
-- Same bash shell, so `$sock` and `record` exist.
+- Run it with the drive in `../SKILL.md`. The engine is `omawind run --offline` on `$run/omawind/wind.sock`.
+- Doctor passes inside that same drive.
 
-- **Connect.** The user connects. Run the reader below. The server pushes three lines on connect. The reader sends no request. It prints three lines and exits 0.
+- **Connect.** The user connects. The drive's reader prints the three lines the server pushes. The reader sends no request. It exits 0.
 - **Hello.** The first line is `{"type":"hello","v":1,"wind":"0.1.0"}`. Observed on 2026-10-14. That was the whole first line.
 - **State.** The second line is one JSON object with `"type":"state"`, `"fetch":{"status":"off"}`, `"keel":"lost"`, and `forecast.run` equal to `2026-09-14T03:00:00Z` with `forecast.hours` equal to 3. `"fetch":{"status":"off"}` is how you see that this run did not ask NOAA for a forecast. Observed on 2026-10-14. The line also had `"status":"expired"` and `"note":"no forecast for now: the newest one has run out"`. `ageMinutes` and `here.time` were present and were not compared.
 - **Stations.** The third line is one JSON object with `"type":"stations"`, `"source":"NDBC"`, `"status":"off"`, and `"stations":[]`. Observed on 2026-10-14. The line was `{"source":"NDBC","stations":[],"status":"off","type":"stations","v":1}`. `"status":"off"` is how you see that this run did not ask NDBC.
@@ -30,56 +29,7 @@ Preconditions:
 - **Proof.** Save the three lines to `$run/artifacts/verify/serve-forecast/`.
 
 ```sh
-omawind_verify_serve() {
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  [[ -S ${sock:-} ]] || return 1
-  record serve-forecast python3 - "$sock" <<'EOF' || return 1
-import socket, sys
-s = socket.socket(socket.AF_UNIX)
-s.settimeout(5)
-s.connect(sys.argv[1])
-f = s.makefile()
-for _ in range(3):
-    line = f.readline()
-    if not line:
-        raise SystemExit(1)
-    sys.stdout.write(line)
-EOF
-  [[ $(cat "$run/artifacts/verify/serve-forecast/exit-code.txt") -eq 0 ]] || return 1
-  python3 - "$run/artifacts/verify/serve-forecast/stdout.txt" <<'EOF' || return 1
-import json, sys
-lines = [json.loads(line) for line in open(sys.argv[1]) if line.strip()]
-if len(lines) != 3:
-    raise SystemExit("expected 3 lines, got %s" % len(lines))
-hello, state, stations = lines
-if hello.get("type") != "hello" or hello.get("v") != 1:
-    raise SystemExit("hello")
-fetch = state.get("fetch") or {}
-forecast = state.get("forecast") or {}
-if state.get("type") != "state" or fetch.get("status") != "off":
-    raise SystemExit("fetch status")
-if forecast.get("run") != "2026-09-14T03:00:00Z" or forecast.get("hours") != 3:
-    raise SystemExit("forecast")
-if state.get("keel") != "lost":
-    raise SystemExit("keel")
-if stations.get("type") != "stations" or stations.get("status") != "off":
-    raise SystemExit("stations status")
-if stations.get("stations") != []:
-    raise SystemExit("stations list")
-EOF
-}
-omawind_verify_serve
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh serve
 ```
 
 ## Gotchas

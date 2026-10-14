@@ -16,7 +16,7 @@ size, and the valid time are what a person checks.
 
 Preconditions:
 
-- Same bash shell as the launch fence in `../SKILL.md`, so `$run` and `record` exist.
+- Run it with the drive in `../SKILL.md`.
 - `decode` reads the path you pass. It does not read the cache, and it does not open the socket. Leave the fixture in the repo. The copy under `$run/cache` is not for this drive.
 
 - **Hour f01.** The user asks what is in the file. Run `env -u OMAWIND_CONFIG HOME="$run/home" XDG_CACHE_HOME="$run/cache" XDG_CONFIG_HOME="$run/config" XDG_RUNTIME_DIR="$run" ./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2`. Exit code 0. Stdout is four lines, in order `GUST`, `MSLMA`, `UGRD`, `VGRD`. Each line contains `grid 82×88` and `valid 2026-09-14T04:00:00Z`. Observed on 2026-10-14. Exit 0, stderr empty, and those four prefixes and tokens were present.
@@ -24,44 +24,7 @@ Preconditions:
 - **Proof.** `record` saves the command, stdout, stderr, and the exit code to `$run/artifacts/verify/decode-f01/` and `$run/artifacts/verify/decode-missing/`.
 
 ```sh
-omawind_verify_decode() {
-  local got want
-  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
-  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
-  set +e
-  set +u
-  set -o pipefail
-  [[ -n ${run:-} && -d $run ]] || return 1
-  record decode-f01 env -u OMAWIND_CONFIG \
-    HOME="$run/home" \
-    XDG_CACHE_HOME="$run/cache" \
-    XDG_CONFIG_HOME="$run/config" \
-    XDG_RUNTIME_DIR="$run" \
-    ./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2 || return 1
-  [[ $(cat "$run/artifacts/verify/decode-f01/exit-code.txt") -eq 0 ]] || return 1
-  [[ ! -e $run/artifacts/verify/decode-f01/stderr.txt ]] || return 1
-  got=$(awk '{print $1}' "$run/artifacts/verify/decode-f01/stdout.txt") || return 1
-  want=$(printf '%s\n' GUST MSLMA UGRD VGRD)
-  [[ $got == "$want" ]] || return 1
-  grep -F 'grid 82×88' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null || return 1
-  grep -F 'valid 2026-09-14T04:00:00Z' "$run/artifacts/verify/decode-f01/stdout.txt" >/dev/null || return 1
-  record decode-missing env -u OMAWIND_CONFIG \
-    HOME="$run/home" \
-    XDG_CACHE_HOME="$run/cache" \
-    XDG_CONFIG_HOME="$run/config" \
-    XDG_RUNTIME_DIR="$run" \
-    ./target/debug/omawind decode "$run/missing.grib2" || return 1
-  [[ $(cat "$run/artifacts/verify/decode-missing/exit-code.txt") -ne 0 ]] || return 1
-  grep -F 'missing.grib2' "$run/artifacts/verify/decode-missing/stderr.txt" >/dev/null || return 1
-}
-omawind_verify_decode
-_omawind_verify_status=$?
-if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
-  source "$OMAWIND_VERIFY_OPTS"
-  rm -f "$OMAWIND_VERIFY_OPTS"
-fi
-unset OMAWIND_VERIFY_OPTS
-return "$_omawind_verify_status"
+bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh decode
 ```
 
 ## Gotchas

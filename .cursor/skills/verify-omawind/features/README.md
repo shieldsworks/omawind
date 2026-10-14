@@ -8,7 +8,7 @@ This directory is the maintained source for verifying omawind's user-facing beha
 - The recorded HRRR run copied into `$run/cache/omawind/hrrr/36.8000_-123.8000_38.8000_-121.6000/2026091403/` from `tests/fixtures/hrrr/2026091403/`.
 - Doctor passes and names this run's process and socket, for any drive that starts `omawind run`.
 - Never drive an instance this run did not start.
-- The launch fence defines `$run`, `$sock`, `$evidence`, and `record`. Later fences run in that same bash shell. Each fence is a function. The sourcing shell sources the saved `set +o` output after the function returns, so options match the shell from before the fence, including errexit when it was on. They do not export `HOME` or the XDG variables.
+- The drive is `bash --noprofile --norc ../drive.sh`. It is a separate process. The shell that starts it keeps its options and traps. The drive does not export `HOME` or the XDG variables.
 
 ## Driving conventions
 
@@ -21,7 +21,7 @@ This directory is the maintained source for verifying omawind's user-facing beha
 
 - CLI proof is the command, stdout, stderr, and the exit code.
 - Socket proof is the three lines the server pushes on connect, verbatim. The reader sends no request.
-- Window proof on a Hyprland session is a `grim` image in `window-painted`. That directory is always written. When `quickshell` or `grim` is missing, it names the missing command and the fence returns 1. Do not call that file a screenshot. `scripts/verify.sh engine` passes this map only when it prints `All engine-path checks passed.` and the Qt6 skip line is absent. If the skip line appears at all, it is a miss.
+- Window proof on a Hyprland session is a `grim` image in `window-painted`. That directory is always written. When `quickshell` or `grim` is missing, it names the missing command and the drive exits non-zero. Do not call that file a screenshot. `scripts/verify.sh engine` passes this map only when `All engine-path checks passed.` is in the transcript and the Qt6 skip line is in neither stdout nor stderr. If the skip line appears in either stream, it is a miss.
 - Record the feature ID and the entry point with every artifact.
 - An unreachable path is reported with the command tried and the unmet precondition. Do not report it as verified through a different path.
 
