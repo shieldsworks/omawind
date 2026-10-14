@@ -13,9 +13,11 @@ Run from the repo root, in bash. `at` and `decode` exit on their own. Build once
 
 Run the fences in this order, in one shell. Launch, doctor, the fences in `features/`, then cleanup.
 
-Each fence is one function. Sourcing the fence defines that function and calls it. The function saves `set +o` and installs a RETURN trap that restores those options, so the operator's shell options are back when the fence returns. A failed check is `return 1`. The interactive shell keeps running.
+Each fence is one function. Sourcing the fence defines that function and calls it. The function writes `set +o` to a temporary file before it changes any option. After the function returns, the sourcing shell sources that file and returns the function's status, so the operator's options are back, including errexit when it was on. A failed check is `return 1`. With errexit off, the interactive shell keeps running. With errexit on, a failing `source` exits the shell, because that is errexit.
 
-`set -e` is not used. In interactive bash, `set -e` inside a function exits the whole shell on the failing command, and the RETURN trap does not run. `local -` does not prevent that. `set -u` on an unset expansion also skips the RETURN trap and leaves nounset on. The trap has to be set in the fence function itself. A helper that sets the trap restores options when the helper returns, before the fence body runs.
+A RETURN trap does not restore errexit. Bash discards an errexit change made inside the trap. `$(set +o)` does not record it either, because that command runs in a subshell. The file is written with `set +o >|` in the function, which is the shell whose options were in force.
+
+`set -e` is not used inside the fence. In interactive bash, `set -e` inside a function exits the whole shell on the failing command. `local -` does not prevent that. The function also turns nounset off after the file is written. An unset expansion under nounset aborts the function before the sourcing shell can restore options. The saved file turns nounset back on when it was on.
 
 Do not `export` `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, or `XDG_RUNTIME_DIR`. `config.rs` reads `OMAWIND_CONFIG` before those variables, so every omawind command also passes `-u OMAWIND_CONFIG`. The prefix on each command is `env -u OMAWIND_CONFIG HOME=... XDG_CACHE_HOME=... XDG_CONFIG_HOME=... XDG_RUNTIME_DIR=...`.
 
@@ -25,10 +27,11 @@ Do not `export` `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, or `XDG_RUNTIME_DIR
 
 ```sh
 omawind_verify_launch() {
-  local opts ready dest _
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local ready dest _
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   omawind_verify_stop() {
     local dir=$1 pid _
@@ -51,6 +54,13 @@ omawind_verify_launch() {
   mise exec -- cargo build --locked || return 1
   if [[ -n ${_omawind_verify_run:-} ]]; then
     omawind_verify_stop "$_omawind_verify_run" || return 1
+    case $_omawind_verify_run in
+      /tmp/omawind-verify.*)
+        if [[ -d $_omawind_verify_run ]]; then
+          rm -rf "$_omawind_verify_run" || return 1
+        fi
+        ;;
+    esac
   fi
   run=$(mktemp -d /tmp/omawind-verify.XXXXXX)
   [[ $run == /* ]] || return 1
@@ -106,6 +116,13 @@ omawind_verify_launch() {
   }
 }
 omawind_verify_launch
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 Ready when `$sock` is a socket and the pid in `$run/pid` is alive. `at` and `decode` do not open that socket. They still take the `env` prefix, with `HOME`, `XDG_CACHE_HOME`, and `XDG_CONFIG_HOME` inside `$run`.
@@ -114,7 +131,7 @@ Ready when `$sock` is a socket and the pid in `$run/pid` is alive. `at` and `dec
 
 `record` writes the command, stdout, stderr, and the exit code under `$run/artifacts/verify/<id>/`. It removes an empty stdout or stderr file so a later check can require every copied file to be non-empty. A missing stdout file means the command printed nothing there. `record` does not turn `set -e` back on.
 
-The EXIT trap calls `omawind_verify_stop` with the directory from this launch, quoted into the trap when it is installed. It does not expand `$run` when the shell exits. A second launch stops that engine before it creates a new directory, so the first process is not left running. Cleanup runs `trap - EXIT` after the engine is dead.
+The EXIT trap calls `omawind_verify_stop` with the directory from this launch, quoted into the trap when it is installed. It does not expand `$run` when the shell exits. A second launch stops that engine and removes that run directory before it creates a new one, so the first process is not left running and the first directory is not left behind. The directory is removed only when its path is `/tmp/omawind-verify.*` and the stop succeeded. Cleanup runs `trap - EXIT` after the engine is dead.
 
 ## Doctor
 
@@ -122,10 +139,11 @@ Run this before the first drive, and again when anything looks off. A missing so
 
 ```sh
 omawind_verify_doctor() {
-  local opts pid
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local pid
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   [[ -n ${run:-} && -n ${sock:-} ]] || return 1
   record doctor env -u OMAWIND_CONFIG \
@@ -149,6 +167,13 @@ omawind_verify_doctor() {
   printf 'pid %s alive\n' "$pid"
 }
 omawind_verify_doctor
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 The version line is this checkout's binary. The pid is the process this run started. The socket is `$run/omawind/wind.sock`. Connect only to that socket. Do not drive an omawind the user already has running. Do not read `~/.config/omawind` or `~/.cache/omawind`.
@@ -169,7 +194,7 @@ Follow `features/`. Start at `features/README.md`. A proof that drives one conve
 
 - A sailor's terminal is `./target/debug/omawind at` and `./target/debug/omawind decode`, each with the `env` prefix.
 - An app reads `$sock`, one JSON object per line, as `docs/protocol.md` describes. The server pushes three lines on connect. The reader is in `features/serve-forecast.md`.
-- The window is `./run.sh`, which execs `quickshell -p ui/shell.qml`. The window fence always writes `window-painted`. When `quickshell` is not on `PATH`, that directory names the missing command. When it is, the fence starts `./run.sh` in the background, captures with `grim`, and stops it.
+- The window is `./run.sh`, which execs `quickshell -p ui/shell.qml`. The window fence always writes `window-painted`. When `quickshell` is not on `PATH`, that directory names the missing command and the fence returns 1. When it is, the fence backgrounds `./run.sh` with no `setsid`, captures with `grim`, and stops it.
 
 `omawind fetch` and `omawind stations` call NOAA. They are not in this map. Drive them only when the task is that network path, and say that you did. The CLI has no flag that points them at `tests/fixtures/`.
 
@@ -180,7 +205,7 @@ Follow `features/`. Start at `features/README.md`. A proof that drives one conve
 - Save the command, stdout, stderr, and the exit code. `record` does that.
 - For the socket, save the three lines the server pushes on connect. The reader sends no request.
 - The recorded HRRR files stand in for NOMADS. The cache reader that `omawind fetch` fills is the one that loads them. `--offline` must not open a connection to NOMADS. The proof is the state line `"fetch":{"status":"off"}` and the stations line `"status":"off"`. An empty `$run/engine.log` does not show that. The engine does not write those URLs to the log.
-- `window-painted` is always written. On a Hyprland session with Quickshell, it is the `grim` image. When `quickshell` or `grim` is missing, the directory names that command and `miss.txt` records the miss. Do not call that file a screenshot. `window-engine` is a pass only when stdout contains `All engine-path checks passed.` The Qt6 line `Qt6 QML dev packages not installed. Skipped.` is a miss, written to `miss.txt`, even though `scripts/verify.sh` exits 0.
+- `window-painted` is always written. On a Hyprland session with Quickshell, it is the `grim` image. When `quickshell` or `grim` is missing, the directory names that command and `miss.txt` records the miss. A `miss.txt` in `window-painted` or `window-engine` makes the window fence return 1. Do not call that file a screenshot. `window-engine` is a pass only when stdout contains `All engine-path checks passed.` and does not contain the Qt6 line. The Qt6 line `Qt6 QML dev packages not installed. Skipped.` is a miss, written to `miss.txt`, even when `All engine-path checks passed.` is also present, and even though `scripts/verify.sh` exits 0.
 - If a path cannot be reached, write the command and the missing precondition. Do not mark that path passed.
 
 ## Cleanup
@@ -189,10 +214,11 @@ Copy the evidence out first. Then stop only the pid this run wrote. Confirm that
 
 ```sh
 omawind_verify_cleanup() {
-  local opts extra found f d
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local extra found f d
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   [[ -n ${run:-} && -n ${evidence:-} && -d $run ]] || return 1
   mkdir -p "$evidence" || return 1
@@ -226,6 +252,13 @@ omawind_verify_cleanup() {
   [[ -d $evidence ]] || return 1
 }
 omawind_verify_cleanup
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 Evidence stays under `$evidence`. `$run` is gone. The EXIT trap is gone. The fences do not export `HOME` or the XDG variables, so those names in this shell are the ones you started with.
@@ -240,16 +273,23 @@ This skill ships no script. The socket reader is the Python block in `features/s
 
 ```sh
 omawind_verify_engine_probe() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   scripts/verify.sh engine || return 1
 }
 omawind_verify_engine_probe
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 `scripts/verify.sh` lines 68 to 70 assign `XDG_RUNTIME_DIR` when it is unset, using `/tmp/runtime-omawind-verify`, then `mkdir` that directory and `chmod 700` it. When the variable is already set, the script creates that directory instead. The script is a subprocess, so the assignment does not stay in your shell. The directory does.
 
-The probe substitutes a stub for `omawind run`. It does not fetch from NOAA. When Qt6 is missing it prints `Qt6 QML dev packages not installed. Skipped.` and exits 0. The window fence records that line in `miss.txt`. That skip is not a pass of `features/window.md`. A pass of the engine path is the line `All engine-path checks passed.`
+The probe substitutes a stub for `omawind run`. It does not fetch from NOAA. When Qt6 is missing it prints `Qt6 QML dev packages not installed. Skipped.` and exits 0. The window fence records that line in `miss.txt` and returns 1. That skip is not a pass of `features/window.md`, including when `All engine-path checks passed.` is in the same transcript. A pass of the engine path is the line `All engine-path checks passed.` and no Qt6 skip line.

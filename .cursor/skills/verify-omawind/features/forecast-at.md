@@ -31,10 +31,10 @@ Preconditions:
 
 ```sh
 omawind_verify_at() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   [[ -n ${run:-} && -d $run ]] || return 1
   record at-berkeley env -u OMAWIND_CONFIG \
@@ -74,6 +74,13 @@ omawind_verify_at() {
   grep -F 'outside the forecast area' "$run/artifacts/verify/at-outside/stderr.txt" || return 1
 }
 omawind_verify_at
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 ## Gotchas

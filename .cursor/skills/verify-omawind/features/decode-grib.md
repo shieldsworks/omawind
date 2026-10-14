@@ -25,10 +25,11 @@ Preconditions:
 
 ```sh
 omawind_verify_decode() {
-  local opts got want
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  local got want
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   [[ -n ${run:-} && -d $run ]] || return 1
   record decode-f01 env -u OMAWIND_CONFIG \
@@ -54,6 +55,13 @@ omawind_verify_decode() {
   grep -F 'missing.grib2' "$run/artifacts/verify/decode-missing/stderr.txt" >/dev/null || return 1
 }
 omawind_verify_decode
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 ## Gotchas

@@ -31,10 +31,10 @@ Preconditions:
 
 ```sh
 omawind_verify_serve() {
-  local opts
-  opts=$(set +o)
-  trap 'eval "$opts"; trap - RETURN' RETURN
+  OMAWIND_VERIFY_OPTS=$(mktemp) || return 1
+  set +o >|"$OMAWIND_VERIFY_OPTS" || return 1
   set +e
+  set +u
   set -o pipefail
   [[ -S ${sock:-} ]] || return 1
   record serve-forecast python3 - "$sock" <<'EOF' || return 1
@@ -73,6 +73,13 @@ if stations.get("stations") != []:
 EOF
 }
 omawind_verify_serve
+_omawind_verify_status=$?
+if [[ -n ${OMAWIND_VERIFY_OPTS:-} && -f ${OMAWIND_VERIFY_OPTS:-} ]]; then
+  source "$OMAWIND_VERIFY_OPTS"
+  rm -f "$OMAWIND_VERIFY_OPTS"
+fi
+unset OMAWIND_VERIFY_OPTS
+return "$_omawind_verify_status"
 ```
 
 ## Gotchas
