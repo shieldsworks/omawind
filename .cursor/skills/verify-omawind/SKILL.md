@@ -12,22 +12,24 @@ description: "Drive omawind the way a sailor does (the CLI, the engine socket, a
 Run the drive in a bash you start for that purpose. Do not source `drive.sh` and do not paste it into the shell you are already using.
 
 ```sh
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh
 ```
 
-That process is the whole drive. It sets `set -euo pipefail` and `set -m`. On EXIT, INT, and TERM it signals the engine and the window process group with TERM, then KILL, copies the artifacts out, and only then deletes the run directory. The shell that started it is not the shell those options and traps belong to.
+Bash reads `BASH_ENV` before the script. `env -u BASH_ENV` clears it. A `BASH_ENV` file that runs `exit 0` ends the process before `drive.sh` starts, and the script never gets a chance to trap that. Do not source `drive.sh`.
+
+That process is the whole drive. It sets `set -euo pipefail` and `set -m`. On EXIT, INT, and TERM it ignores further INT and TERM, signals every process group it started with TERM and then KILL, copies the artifacts out, and deletes the run directory only after that copy includes a marker for this run. The shell that started it is not the shell those options and traps belong to.
 
 With no arguments the drive runs doctor, `at`, decode, serve, and window. Name the features you want:
 
 ```sh
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh doctor at decode serve
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh window
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh twice
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh doctor at decode serve
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh window
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh twice
 ```
 
-`twice` launches a second engine in the same process. It copies the first run's artifacts into the evidence directory before it deletes that run directory.
+`twice` launches a second engine in the same process. It copies the first run's artifacts into the evidence directory, checks the copy, and only then deletes that run directory.
 
-The drive prints `evidence: /tmp/omawind-verify-evidence.XXXXXX` as it exits. That directory remains. The run directory does not.
+The drive prints `evidence: /tmp/omawind-verify-evidence.XXXXXX` last. That directory remains. The run directory remains only when the copy failed. The failure line names that path, and the drive exits non-zero.
 
 `cargo` on `PATH` may be older than `Cargo.toml` `rust-version`. The drive prepends `$HOME/.local/bin` and runs `mise exec -- cargo build --locked`. `bash --noprofile --norc` still inherits the environment of the shell that started it, including `PATH`.
 
@@ -63,16 +65,16 @@ Follow `features/`. Start at `features/README.md`.
 
 ## Evidence
 
-The evidence directory is created before the engine starts. The EXIT trap copies `$run/artifacts` there before it deletes `$run`. A second launch in the same process does the same copy before it deletes the first directory.
+The evidence directory is created before the engine starts. The EXIT trap copies `$run/artifacts` there and deletes `$run` only when `cp` succeeds and the copy contains `.copy-marker` for that run. A failed copy keeps `$run`, prints `copy failed, run dir kept:` and that path, and exits non-zero. A second launch in the same process uses the same rule.
 
 - `record` saves the command, stdout, stderr, and the exit code under `verify/<id>/`. An empty stdout or stderr file is removed.
 - For the socket, the three lines the server pushes on connect are in `verify/serve-forecast/`. The reader sends no request.
 - The recorded HRRR files stand in for NOMADS. `--offline` must not open a connection to NOMADS. The proof is the state line `"fetch":{"status":"off"}` and the stations line `"status":"off"`.
 - `window-painted` is always written. On a Hyprland session with Quickshell, it is the `grim` image. When `quickshell` or `grim` is missing, the directory names that command and `miss.txt` records the miss. Do not call that file a screenshot. `window-engine` passes only when stdout or stderr contains `All engine-path checks passed.` and neither stream contains `Qt6 QML dev packages not installed. Skipped.` The drive searches both streams. `scripts/verify.sh` still exits 0 on that skip.
-- The engine transcript is produced with `env -u OMAWIND_CONFIG` and `XDG_RUNTIME_DIR` set to `$run/engine-probe-runtime`.
+- The engine transcript is produced with `env -u OMAWIND_CONFIG` and `XDG_RUNTIME_DIR` set to `$run/engine-probe-runtime`. The command is `scripts/verify.sh engine`. If `OMAWIND_VERIFY_ENGINE` is set in the environment that starts the drive, the drive unsets it, still runs `scripts/verify.sh engine`, and exits non-zero.
 
 ## Cleanup
 
-The trap is the cleanup. It runs on a normal exit, on Ctrl-C, and on TERM. It signals each process group the drive started (`kill -- -pgid`), waits, then sends KILL. It copies the artifacts, then deletes the run directory. It does not `pkill` by name.
+The trap is the cleanup. It runs on a normal exit, on Ctrl-C, and on TERM. The first thing it does is ignore INT and TERM, so a second Ctrl-C does not leave the engine or the window running. It signals every recorded process group with TERM, then KILL, with no sleep between those two signals. `./run.sh` is started with `setsid` in its own session, and the drive keeps that process group id after the leader exits. A child reparented to pid 1 is still in that group, and `kill -- -pgid` reaches it. After the signals, the drive checks `pgrep -g` for each group and kills any process whose cwd, command, or `XDG_RUNTIME_DIR` is under `$run`. It copies the artifacts, checks the marker, and only then deletes the run directory. The `evidence:` line is the last line it prints.
 
 When omawind's commands or the lines it prints change, run `/maintain-verification-skill` over this directory.

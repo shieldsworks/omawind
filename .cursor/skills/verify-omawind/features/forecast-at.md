@@ -30,7 +30,7 @@ Preconditions:
 - **Proof.** `record` saves the command, stdout, stderr, and the exit code to `$run/artifacts/verify/at-berkeley/`, `$run/artifacts/verify/at-home/`, `$run/artifacts/verify/at-empty/`, and `$run/artifacts/verify/at-outside/`.
 
 ```sh
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh at
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh at
 ```
 
 ## Gotchas

@@ -29,7 +29,7 @@ Preconditions:
 - **Proof.** Save the three lines to `$run/artifacts/verify/serve-forecast/`.
 
 ```sh
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh serve
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh serve
 ```
 
 ## Gotchas
@@ -38,4 +38,4 @@ bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh serve
 - `state` includes `ageMinutes` and `here.time`, which move. Do not pin those two.
 - `keel` is `lost` because this run's `XDG_RUNTIME_DIR` has no omakeel socket. That keeps the drive off the user's keel. Do not read `lost` as a failed forecast load.
 - Pass `--socket "$sock"`. The default path is `$XDG_RUNTIME_DIR/omawind/wind.sock`. With `XDG_RUNTIME_DIR` set to `$run` on the command, that default is `$run/omawind/wind.sock`. `$run/wind.sock` is a different path. The window opens the default path, and a miss there starts `omawind run` with no `--offline`.
-- The window path needs Hyprland and Quickshell. Report it skipped when those are absent. The substitute is `window.md`, and it is not this socket transcript.
+- A missing Quickshell is not a skipped window. `drive.sh window` exits non-zero and writes `missing command: quickshell`. This page is the socket transcript. The window recipe is `window.md`.

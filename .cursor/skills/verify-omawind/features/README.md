@@ -8,7 +8,7 @@ This directory is the maintained source for verifying omawind's user-facing beha
 - The recorded HRRR run copied into `$run/cache/omawind/hrrr/36.8000_-123.8000_38.8000_-121.6000/2026091403/` from `tests/fixtures/hrrr/2026091403/`.
 - Doctor passes and names this run's process and socket, for any drive that starts `omawind run`.
 - Never drive an instance this run did not start.
-- The drive is `bash --noprofile --norc ../drive.sh`. It is a separate process. The shell that starts it keeps its options and traps. The drive does not export `HOME` or the XDG variables.
+- The drive is `env -u BASH_ENV bash --noprofile --norc ../drive.sh`. It is a separate process. The shell that starts it keeps its options and traps. The drive does not export `HOME` or the XDG variables. `env -u BASH_ENV` is required because bash reads `BASH_ENV` before the script.
 
 ## Driving conventions
 

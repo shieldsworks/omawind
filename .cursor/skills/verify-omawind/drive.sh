@@ -1,4 +1,15 @@
 #!/usr/bin/env bash
+if [[ -n ${BASH_ENV:-} ]]; then
+  unset BASH_ENV
+  exec bash --noprofile --norc "$0" "$@"
+fi
+
+seamed=0
+if [[ -n ${OMAWIND_VERIFY_ENGINE:-} ]]; then
+  seamed=1
+fi
+unset OMAWIND_VERIFY_ENGINE
+
 set -euo pipefail
 set -m
 
@@ -9,10 +20,15 @@ run=
 evidence=
 engine_pid=
 window_pid=
+window_pgid=
 grim_pid=
+grim_pgid=
 launch_n=0
+copy_failed=0
+kept_run=
+all_pgids=
 self_pgid=$(ps -o pgid= -p $$ | tr -d ' ')
-pgid_list=
+started_pid=
 
 if [[ -n ${EVIDENCE_DIR:-} ]]; then
   mkdir -p "$EVIDENCE_DIR"
@@ -21,79 +37,152 @@ else
   evidence=$(mktemp -d /tmp/omawind-verify-evidence.XXXXXX)
 fi
 
-add_tree() {
+add_pgid() {
+  local pgid=${1:-}
+  [[ -n $pgid && $pgid != "$self_pgid" ]] || return 0
+  case " $all_pgids " in
+    *" $pgid "*) ;;
+    *) all_pgids="$all_pgids $pgid" ;;
+  esac
+}
+
+note_tree() {
   local pid=${1:-} child pgid
   [[ -n $pid ]] || return 0
-  kill -0 "$pid" 2>/dev/null || return 0
   pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)
-  if [[ -n $pgid && $pgid != "$self_pgid" ]]; then
-    case " $pgid_list " in
-      *" $pgid "*) ;;
-      *) pgid_list="$pgid_list $pgid" ;;
-    esac
-  fi
+  add_pgid "$pgid"
+  kill -0 "$pid" 2>/dev/null || return 0
   for child in $(ps -o pid= --ppid "$pid" 2>/dev/null || true); do
-    add_tree "$child"
+    note_tree "$child"
   done
 }
 
-stop_tree() {
-  local pid=${1:-} pgid alive i
-  pgid_list=
-  add_tree "$pid"
-  [[ -n ${pgid_list// /} ]] || return 0
-  for pgid in $pgid_list; do
-    kill -TERM -- "-$pgid" 2>/dev/null || true
+start_session() {
+  local out=$1 err=$2
+  shift 2
+  set +m
+  if [[ $out == "$err" ]]; then
+    setsid "$@" >"$out" 2>&1 </dev/null &
+  else
+    setsid "$@" >"$out" 2>"$err" </dev/null &
+  fi
+  started_pid=$!
+  set -m
+  add_pgid "$started_pid"
+}
+
+signal_pgids() {
+  local sig=$1 pgid
+  shift
+  for pgid in "$@"; do
+    [[ -n $pgid && $pgid != "$self_pgid" ]] || continue
+    kill "-$sig" -- "-$pgid" 2>/dev/null || true
   done
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    alive=0
-    for pgid in $pgid_list; do
-      if kill -0 -- "-$pgid" 2>/dev/null; then
-        alive=1
-      fi
+}
+
+sweep_run() {
+  local pid cwd cmd envfile
+  [[ -n ${run:-} && -d $run ]] || return 0
+  for pid in /proc/[0-9]*; do
+    pid=${pid#/proc/}
+    [[ $pid == "$$" ]] && continue
+    cwd=$(readlink -f "/proc/$pid/cwd" 2>/dev/null || true)
+    cmd=$(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null || true)
+    envfile=/proc/$pid/environ
+    if [[ $cwd == "$run" || $cwd == "$run"/* || $cmd == *"$run"* ]]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      continue
+    fi
+    if [[ -r $envfile ]] && tr '\0' '\n' <"$envfile" | grep -F -q "XDG_RUNTIME_DIR=$run"; then
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+  done
+}
+
+stop_all() {
+  local pgid pid
+  local -a ids=()
+  note_tree "${engine_pid:-}"
+  note_tree "${window_pid:-}"
+  note_tree "${grim_pid:-}"
+  for pgid in $all_pgids; do
+    ids+=("$pgid")
+  done
+  signal_pgids TERM "${ids[@]}"
+  signal_pgids KILL "${ids[@]}"
+  for pgid in "${ids[@]}"; do
+    for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
+      kill -KILL "$pid" 2>/dev/null || true
     done
-    [[ $alive -eq 0 ]] && return 0
-    sleep 0.1
   done
-  for pgid in $pgid_list; do
-    kill -KILL -- "-$pgid" 2>/dev/null || true
+  sweep_run
+  engine_pid=
+  window_pid=
+  window_pgid=
+  grim_pid=
+  grim_pgid=
+  all_pgids=
+}
+
+stop_groups() {
+  local pgid pid
+  local -a ids=()
+  for pgid in "$@"; do
+    [[ -n $pgid && $pgid != "$self_pgid" ]] || continue
+    note_tree "$pgid"
+    ids+=("$pgid")
   done
-  for i in 1 2 3 4 5 6 7 8 9 10; do
-    alive=0
-    for pgid in $pgid_list; do
-      if kill -0 -- "-$pgid" 2>/dev/null; then
-        alive=1
-      fi
+  signal_pgids TERM "${ids[@]}"
+  signal_pgids KILL "${ids[@]}"
+  for pgid in "${ids[@]}"; do
+    for pid in $(pgrep -g "$pgid" 2>/dev/null || true); do
+      kill -KILL "$pid" 2>/dev/null || true
     done
-    [[ $alive -eq 0 ]] && return 0
-    sleep 0.1
   done
-  return 0
 }
 
 archive_current() {
+  local dest marker ok old
   [[ -n ${run:-} && -d ${run:-} ]] || return 0
+  stop_all
   launch_n=$((launch_n + 1))
-  if [[ -d $run/artifacts ]]; then
-    mkdir -p "$evidence/launch-$launch_n"
-    cp -a "$run/artifacts/." "$evidence/launch-$launch_n/"
+  dest=$evidence/launch-$launch_n
+  marker=$run/artifacts/.copy-marker
+  ok=0
+  mkdir -p "$run/artifacts" "$dest"
+  printf '%s\n' "$run" >"$marker"
+  if cp -a "$run/artifacts/." "$dest/"; then
+    if [[ -f $dest/.copy-marker && $(cat "$dest/.copy-marker") == "$run" ]]; then
+      ok=1
+    fi
   fi
-  stop_tree "${grim_pid:-}"
-  stop_tree "${window_pid:-}"
-  stop_tree "${engine_pid:-}"
-  grim_pid=
-  window_pid=
-  engine_pid=
-  local old=$run
-  run=
-  rm -rf "$old"
+  if [[ $ok -eq 1 ]]; then
+    old=$run
+    run=
+    rm -rf "$old"
+  else
+    copy_failed=1
+    kept_run=$run
+    printf 'copy failed, run dir kept: %s\n' "$run" >&2
+    run=
+  fi
 }
 
 finish() {
   local status=$?
-  trap - EXIT INT TERM
+  trap '' INT TERM
+  trap - EXIT
   set +e
   archive_current
+  if [[ $seamed -eq 1 ]]; then
+    printf 'OMAWIND_VERIFY_ENGINE was set\n' >&2
+    if [[ $status -eq 0 ]]; then
+      status=1
+    fi
+  fi
+  if [[ $copy_failed -eq 1 && $status -eq 0 ]]; then
+    status=1
+  fi
   printf 'evidence: %s\n' "$evidence"
   exit "$status"
 }
@@ -149,9 +238,14 @@ launch() {
     tests/fixtures/hrrr/2026091403/f02.grib2 \
     "$dest/"
   pgrep -x omawind | sort >"$run/pids-before" || true
-  oma ./target/debug/omawind run --offline --socket "$sock" \
-    >"$run/engine.log" 2>&1 &
-  engine_pid=$!
+  start_session "$run/engine.log" "$run/engine.log" \
+    env -u OMAWIND_CONFIG \
+    HOME="$run/home" \
+    XDG_CACHE_HOME="$run/cache" \
+    XDG_CONFIG_HOME="$run/config" \
+    XDG_RUNTIME_DIR="$run" \
+    ./target/debug/omawind run --offline --socket "$sock"
+  engine_pid=$started_pid
   ready=0
   for _ in $(seq 50); do
     if [[ -S $sock ]]; then
@@ -271,6 +365,12 @@ window_dead() {
   printf '%s\n' 'process was not alive' >"$dir/miss.txt"
 }
 
+window_up() {
+  [[ -n ${window_pid:-} && -n ${window_pgid:-} ]] || return 1
+  kill -0 "$window_pid" 2>/dev/null || return 1
+  kill -0 -- "-$window_pgid" 2>/dev/null
+}
+
 transcript_has_skip() {
   local dir=$1 f
   for f in "$dir/stdout.txt" "$dir/stderr.txt"; do
@@ -283,7 +383,7 @@ transcript_has_skip() {
 }
 
 drive_window() {
-  local wayland runtime code dir alive painted_ok engine_bin
+  local wayland runtime code dir painted_ok _
   local -a cmd
   [[ -S ${sock:-} && -d ${run:-} ]]
   wayland=${WAYLAND_DISPLAY-}
@@ -315,17 +415,17 @@ drive_window() {
     mkdir -p "$dir"
     printf '%q ' "${cmd[@]}" >"$dir/command.txt"
     printf '\n' >>"$dir/command.txt"
-    "${cmd[@]}" >"$dir/stdout.txt" 2>"$dir/stderr.txt" </dev/null &
-    window_pid=$!
-    alive=0
+    start_session "$dir/stdout.txt" "$dir/stderr.txt" "${cmd[@]}"
+    window_pid=$started_pid
+    window_pgid=$started_pid
+    code=0
     for _ in $(seq 20); do
-      if kill -0 "$window_pid" 2>/dev/null; then
-        alive=1
+      if window_up; then
         break
       fi
       sleep 0.1
     done
-    if [[ $alive -ne 1 ]]; then
+    if ! window_up; then
       set +e
       wait "$window_pid" 2>/dev/null
       code=$?
@@ -337,18 +437,43 @@ drive_window() {
         printf 'pid %s exited\n' "$window_pid" >"$dir/stdout.txt"
       fi
       window_dead
+      stop_groups "$window_pgid"
       window_pid=
+      window_pgid=
       painted_ok=0
+    elif ! command -v grim >/dev/null 2>&1; then
+      window_miss window-painted grim
+      painted_ok=0
+      stop_groups "$window_pgid"
+      set +e
+      wait "$window_pid" 2>/dev/null
+      code=$?
+      set -e
+      printf '%s\n' "$code" >"$dir/exit-code.txt"
+      window_pid=
+      window_pgid=
     else
-      if ! command -v grim >/dev/null 2>&1; then
-        window_miss window-painted grim
+      if ! window_up; then
+        window_dead
+        stop_groups "$window_pgid"
+        window_pid=
+        window_pgid=
         painted_ok=0
       else
         dir=$run/artifacts/verify/window-painted
         mkdir -p "$dir"
         printf '%s\n' 'timeout -k 5 10 grim -' >"$dir/command.txt"
-        timeout -k 5 10 grim - >"$dir/stdout.txt" 2>"$dir/stderr.txt" &
+        set +m
+        setsid timeout -k 5 10 grim - >"$dir/stdout.txt" 2>"$dir/stderr.txt" </dev/null &
         grim_pid=$!
+        grim_pgid=$grim_pid
+        set -m
+        add_pgid "$grim_pgid"
+        for _ in $(seq 10); do
+          note_tree "$grim_pid"
+          pgrep -P "$grim_pid" >/dev/null 2>&1 && break
+          sleep 0.02
+        done
         set +e
         wait "$grim_pid"
         code=$?
@@ -357,7 +482,15 @@ drive_window() {
         printf '%s\n' "$code" >"$dir/exit-code.txt"
         [[ -s $dir/stdout.txt ]] || rm -f "$dir/stdout.txt"
         [[ -s $dir/stderr.txt ]] || rm -f "$dir/stderr.txt"
-        if [[ $code -eq 0 && -s $dir/stdout.txt ]]; then
+        if ! window_up; then
+          painted_ok=0
+          printf '%s\n' 'process was not alive' >"$dir/miss.txt"
+          set +e
+          wait "$window_pid" 2>/dev/null
+          code=$?
+          set -e
+          printf '%s\n' "$code" >"$run/artifacts/verify/window-launch/exit-code.txt"
+        elif [[ $code -eq 0 && -s $dir/stdout.txt ]]; then
           painted_ok=1
         else
           painted_ok=0
@@ -365,42 +498,39 @@ drive_window() {
             printf 'exit %s\n' "$code" >"$dir/stderr.txt"
           fi
         fi
+        local still_up=0
+        if window_up; then
+          still_up=1
+        fi
+        stop_groups "$window_pgid" "$grim_pgid"
+        if [[ $still_up -eq 1 ]]; then
+          set +e
+          wait "$window_pid" 2>/dev/null
+          code=$?
+          set -e
+          printf '%s\n' "$code" >"$run/artifacts/verify/window-launch/exit-code.txt"
+          [[ -s $run/artifacts/verify/window-launch/stdout.txt ]] || rm -f "$run/artifacts/verify/window-launch/stdout.txt"
+          [[ -s $run/artifacts/verify/window-launch/stderr.txt ]] || rm -f "$run/artifacts/verify/window-launch/stderr.txt"
+          if [[ ! -e $run/artifacts/verify/window-launch/stdout.txt && ! -e $run/artifacts/verify/window-launch/stderr.txt ]]; then
+            printf 'pid %s was alive\n' "$window_pid" >"$run/artifacts/verify/window-launch/stdout.txt"
+          fi
+        fi
+        window_pid=
+        window_pgid=
+        grim_pgid=
       fi
-      stop_tree "$window_pid"
-      set +e
-      wait "$window_pid" 2>/dev/null
-      code=$?
-      set -e
-      dir=$run/artifacts/verify/window-launch
-      printf '%s\n' "$code" >"$dir/exit-code.txt"
-      [[ -s $dir/stdout.txt ]] || rm -f "$dir/stdout.txt"
-      [[ -s $dir/stderr.txt ]] || rm -f "$dir/stderr.txt"
-      if [[ ! -e $dir/stdout.txt && ! -e $dir/stderr.txt ]]; then
-        printf 'pid %s was alive\n' "$window_pid" >"$dir/stdout.txt"
-      fi
-      window_pid=
     fi
   fi
   runtime=$run/engine-probe-runtime
   mkdir -p "$runtime"
   chmod 700 "$runtime"
   [[ $runtime == "$run"/* ]]
-  engine_bin=${OMAWIND_VERIFY_ENGINE:-scripts/verify.sh}
-  if [[ $engine_bin == scripts/verify.sh ]]; then
-    record window-engine env -u OMAWIND_CONFIG \
-      HOME="$run/home" \
-      XDG_CACHE_HOME="$run/cache" \
-      XDG_CONFIG_HOME="$run/config" \
-      XDG_RUNTIME_DIR="$runtime" \
-      scripts/verify.sh engine
-  else
-    record window-engine env -u OMAWIND_CONFIG \
-      HOME="$run/home" \
-      XDG_CACHE_HOME="$run/cache" \
-      XDG_CONFIG_HOME="$run/config" \
-      XDG_RUNTIME_DIR="$runtime" \
-      "$engine_bin"
-  fi
+  record window-engine env -u OMAWIND_CONFIG \
+    HOME="$run/home" \
+    XDG_CACHE_HOME="$run/cache" \
+    XDG_CONFIG_HOME="$run/config" \
+    XDG_RUNTIME_DIR="$runtime" \
+    scripts/verify.sh engine
   dir=$run/artifacts/verify/window-engine
   if transcript_has_skip "$dir"; then
     printf '%s\n' 'Qt6 QML dev packages not installed. Skipped.' >"$dir/miss.txt"

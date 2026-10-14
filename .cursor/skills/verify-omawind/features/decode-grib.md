@@ -24,7 +24,7 @@ Preconditions:
 - **Proof.** `record` saves the command, stdout, stderr, and the exit code to `$run/artifacts/verify/decode-f01/` and `$run/artifacts/verify/decode-missing/`.
 
 ```sh
-bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh decode
+env -u BASH_ENV bash --noprofile --norc .cursor/skills/verify-omawind/drive.sh decode
 ```
 
 ## Gotchas
