@@ -19,19 +19,59 @@
 
 Preconditions:
 
-- `$HOME`, `$XDG_CACHE_HOME`, and `$XDG_CONFIG_HOME` point inside `$run`, and the Bay fixture is copied there as `../SKILL.md` describes.
+- Same bash shell as the launch fence in `../SKILL.md`. `$run` and `record` are set. Do not export `HOME` or the XDG variables.
 - Do not pass `--offline`. `at` has no such flag. It only reads the cache.
-- `at-empty` uses a second directory with an empty cache. Do not point it at the fixture cache.
+- `at-empty` uses `$run/empty-cache`, an empty cache inside `$run`. Do not `mktemp` a second directory outside `$run`. Cleanup deletes `$run` and that cache goes with it.
 
-- **Berkeley.** The user asks for the wind at the marina. Run `./target/debug/omawind at 37.8663,-122.3148`. Exit code 0. Stdout matches `tests/golden/at-berkeley.txt` byte for byte. Observed on 2026-10-14. Exit 0, stderr empty, and `diff -u` against the golden printed nothing.
-- **Home.** The user asks for the wind at home. Run `./target/debug/omawind at`. Exit code 0. Stdout matches the same golden. Observed on 2026-10-14. Exit 0, stderr empty, and the same `diff -u` printed nothing.
-- **Empty cache.** The user asks before any fetch. Run `empty=$(mktemp -d /tmp/omawind-verify-empty.XXXXXX) && mkdir -p "$empty/home" "$empty/cache" "$empty/config" && HOME="$empty/home" XDG_CACHE_HOME="$empty/cache" XDG_CONFIG_HOME="$empty/config" ./target/debug/omawind at 37.8663,-122.3148`. Exit code is not 0. Stderr contains `nothing cached for the region yet`. Remove `$empty` only after the proof is copied out. Observed on 2026-10-14. Exit 1 and stderr `omawind: nothing cached for the region yet: run omawind fetch`.
-- **Outside.** The user asks for a point far from the grid. Run `./target/debug/omawind at 10,10`. Exit code is not 0. Stderr contains `outside the forecast area`. Observed on 2026-10-14. Exit 1 and stderr `omawind: that position is outside the forecast area`.
-- **Proof.** Save stdout, stderr, and the exit code to `$run/artifacts/verify/at-berkeley/`, `$run/artifacts/verify/at-home/`, `$run/artifacts/verify/at-empty/`, and `$run/artifacts/verify/at-outside/`.
+- **Berkeley.** The user asks for the wind at the marina. Run `env -u OMAWIND_CONFIG HOME="$run/home" XDG_CACHE_HOME="$run/cache" XDG_CONFIG_HOME="$run/config" XDG_RUNTIME_DIR="$run" ./target/debug/omawind at 37.8663,-122.3148`. Exit code 0. Stdout matches `tests/golden/at-berkeley.txt` byte for byte. Observed on 2026-10-14. Exit 0, stderr empty, and `diff -u` against the golden printed nothing.
+- **Home.** The user asks for the wind at home. Run `env -u OMAWIND_CONFIG HOME="$run/home" XDG_CACHE_HOME="$run/cache" XDG_CONFIG_HOME="$run/config" XDG_RUNTIME_DIR="$run" ./target/debug/omawind at`. Exit code 0. Stdout matches the same golden. Observed on 2026-10-14. Exit 0, stderr empty, and the same `diff -u` printed nothing.
+- **Empty cache.** The user asks before any fetch. Run `env -u OMAWIND_CONFIG HOME="$run/empty-cache/home" XDG_CACHE_HOME="$run/empty-cache/cache" XDG_CONFIG_HOME="$run/empty-cache/config" XDG_RUNTIME_DIR="$run" ./target/debug/omawind at 37.8663,-122.3148` after creating those three directories. Exit code is not 0. Stderr contains `nothing cached for the region yet`. Observed on 2026-10-14. Exit 1 and stderr `omawind: nothing cached for the region yet: run omawind fetch`.
+- **Outside.** The user asks for a point far from the grid. Run `env -u OMAWIND_CONFIG HOME="$run/home" XDG_CACHE_HOME="$run/cache" XDG_CONFIG_HOME="$run/config" XDG_RUNTIME_DIR="$run" ./target/debug/omawind at 10,10`. Exit code is not 0. Stderr contains `outside the forecast area`. Observed on 2026-10-14. Exit 1 and stderr `omawind: that position is outside the forecast area`.
+- **Proof.** `record` saves the command, stdout, stderr, and the exit code to `$run/artifacts/verify/at-berkeley/`, `$run/artifacts/verify/at-home/`, `$run/artifacts/verify/at-empty/`, and `$run/artifacts/verify/at-outside/`.
+
+```sh
+set -euo pipefail
+[[ -n ${run:-} && -d $run ]]
+record at-berkeley env -u OMAWIND_CONFIG \
+  HOME="$run/home" \
+  XDG_CACHE_HOME="$run/cache" \
+  XDG_CONFIG_HOME="$run/config" \
+  XDG_RUNTIME_DIR="$run" \
+  ./target/debug/omawind at 37.8663,-122.3148
+[[ $(cat "$run/artifacts/verify/at-berkeley/exit-code.txt") -eq 0 ]]
+diff -u tests/golden/at-berkeley.txt "$run/artifacts/verify/at-berkeley/stdout.txt"
+[[ ! -e $run/artifacts/verify/at-berkeley/stderr.txt ]]
+record at-home env -u OMAWIND_CONFIG \
+  HOME="$run/home" \
+  XDG_CACHE_HOME="$run/cache" \
+  XDG_CONFIG_HOME="$run/config" \
+  XDG_RUNTIME_DIR="$run" \
+  ./target/debug/omawind at
+[[ $(cat "$run/artifacts/verify/at-home/exit-code.txt") -eq 0 ]]
+diff -u tests/golden/at-berkeley.txt "$run/artifacts/verify/at-home/stdout.txt"
+[[ ! -e $run/artifacts/verify/at-home/stderr.txt ]]
+mkdir -p "$run/empty-cache/home" "$run/empty-cache/cache" "$run/empty-cache/config"
+record at-empty env -u OMAWIND_CONFIG \
+  HOME="$run/empty-cache/home" \
+  XDG_CACHE_HOME="$run/empty-cache/cache" \
+  XDG_CONFIG_HOME="$run/empty-cache/config" \
+  XDG_RUNTIME_DIR="$run" \
+  ./target/debug/omawind at 37.8663,-122.3148
+[[ $(cat "$run/artifacts/verify/at-empty/exit-code.txt") -ne 0 ]]
+grep -F 'nothing cached for the region yet' "$run/artifacts/verify/at-empty/stderr.txt"
+record at-outside env -u OMAWIND_CONFIG \
+  HOME="$run/home" \
+  XDG_CACHE_HOME="$run/cache" \
+  XDG_CONFIG_HOME="$run/config" \
+  XDG_RUNTIME_DIR="$run" \
+  ./target/debug/omawind at 10,10
+[[ $(cat "$run/artifacts/verify/at-outside/exit-code.txt") -ne 0 ]]
+grep -F 'outside the forecast area' "$run/artifacts/verify/at-outside/stderr.txt"
+```
 
 ## Gotchas
 
-- A real `HOME`, `XDG_CACHE_HOME`, or `XDG_CONFIG_HOME` makes this run print the user's forecast. Set all three inside `$run` before the command.
+- `config.rs` reads `OMAWIND_CONFIG` first. Without `-u OMAWIND_CONFIG`, a value in your shell points `at` at the user's settings. Pass `HOME`, `XDG_CACHE_HOME`, `XDG_CONFIG_HOME`, and `XDG_RUNTIME_DIR` on the command. Do not export them.
 - The committed golden does not depend on the wall clock. `at` prints every cached hour.
 - The byte compare was checked on x86_64. The Lambert math uses libm. If aarch64 rounds a displayed tenth differently, CI prints the diff. Do not edit the golden to hide that until you have both texts.
 - `scripts/check-goldens.sh` is the `at-berkeley` drive. It builds first, copies the fixture into a temp cache, and diffs stdout. It does not cover `at-home`, `at-empty`, or `at-outside`.

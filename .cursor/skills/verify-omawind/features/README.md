@@ -5,9 +5,10 @@ This directory is the maintained source for verifying omawind's user-facing beha
 ## Baseline preconditions
 
 - A build of this checkout, launched per `../SKILL.md`, with its own `$run` directory for the socket, the cache, and the logs.
-- The recorded HRRR run copied into `$XDG_CACHE_HOME/omawind/hrrr/36.8000_-123.8000_38.8000_-121.6000/2026091403/` from `tests/fixtures/hrrr/2026091403/`.
+- The recorded HRRR run copied into `$run/cache/omawind/hrrr/36.8000_-123.8000_38.8000_-121.6000/2026091403/` from `tests/fixtures/hrrr/2026091403/`.
 - Doctor passes and names this run's process and socket, for any drive that starts `omawind run`.
 - Never drive an instance this run did not start.
+- The launch fence defines `$run`, `$sock`, `$evidence`, and `record`. Later fences run in that same bash shell. They do not export `HOME` or the XDG variables.
 
 ## Driving conventions
 
@@ -19,7 +20,7 @@ This directory is the maintained source for verifying omawind's user-facing beha
 ## Proof and skip reporting
 
 - CLI proof is the command, stdout, stderr, and the exit code.
-- Socket proof is the request line and the reply lines, verbatim.
+- Socket proof is the three lines the server pushes on connect, verbatim. The reader sends no request.
 - Window proof on a Hyprland session is a `grim` screenshot with the app visible. Without Quickshell, the `./run.sh` transcript and `scripts/verify.sh engine` are the substitutes. Do not call them a screenshot.
 - Record the feature ID and the entry point with every artifact.
 - An unreachable path is reported with the command tried and the unmet precondition. Do not report it as verified through a different path.
