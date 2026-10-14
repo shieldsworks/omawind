@@ -2,7 +2,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-all_steps=(lint test comments goldens qml engine clean)
+all_steps=(lint test comments goldens qml engine drive clean)
 steps=("$@")
 ((${#steps[@]})) || steps=("${all_steps[@]}")
 IFS=, read -r -a skip <<< "${VERIFY_SKIP:-}"
@@ -30,6 +30,8 @@ step_qml() {
   "$q" --import disable --type disable --property disable \
     --unqualified disable ui/*.qml
 }
+
+step_drive() { scripts/check-drive.sh; }
 
 step_engine() {
   if ! pkg-config --exists Qt6Core Qt6Gui Qt6Qml Qt6Network; then

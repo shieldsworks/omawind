@@ -550,6 +550,87 @@ drive_window() {
   [[ $saw_pass -eq 0 ]]
 }
 
+plant_detached() {
+  local dest=$1
+  python3 - "$run" "$dest" <<'PY'
+import os, sys
+
+run, dest = sys.argv[1], sys.argv[2]
+big = "B" * 130000
+read_fd, write_fd = os.pipe()
+if os.fork() > 0:
+    os.close(write_fd)
+    data = b""
+    while True:
+        chunk = os.read(read_fd, 256)
+        if not chunk:
+            break
+        data += chunk
+    os.close(read_fd)
+    with open(dest, "w", encoding="utf-8") as handle:
+        handle.write(data.decode())
+    os._exit(0)
+os.close(read_fd)
+os.setsid()
+os.chdir("/tmp")
+leader = os.getpid()
+sibling = os.fork()
+if sibling == 0:
+    os.setpgid(0, 0)
+    os.chdir("/tmp")
+    os.execvpe("sleep", ["sleep", "600"], {"PATH": "/usr/bin:/bin", "HOME": "/tmp"})
+os.setpgid(sibling, sibling)
+os.write(write_fd, f"leader {leader}\nsibling {sibling}\n".encode())
+os.close(write_fd)
+os.execvpe(
+    "sleep",
+    ["sleep", "600"],
+    {
+        "PATH": "/usr/bin:/bin",
+        "HOME": "/tmp",
+        "XDG_RUNTIME_DIR": run,
+        "BIG": big,
+    },
+)
+PY
+}
+
+drive_hold() {
+  local hold_phase
+  run=$(mktemp -d /tmp/omawind-verify.XXXXXX)
+  [[ $run == /* ]] || exit 1
+  mkdir -p "$run/home" "$run/artifacts/verify/hold"
+  printf 'hold\n' >"$run/artifacts/verify/hold/stdout.txt"
+  printf '0\n' >"$run/artifacts/verify/hold/exit-code.txt"
+  printf 'run %s\n' "$run"
+
+  hold_phase=groups
+  trap 'hold_phase=go' USR1
+  start_session "$run/window.log" "$run/window.log" sleep 600
+  window_pid=$started_pid
+  window_pgid=$started_pid
+  plant_detached "$run/plant-a"
+  printf 'observe-groups\n'
+  printf 'window %s\n' "$window_pid"
+  cat "$run/plant-a"
+  while [[ $hold_phase == groups ]]; do
+    sleep 0.05 || true
+  done
+  trap - USR1
+  stop_groups "$window_pgid"
+  window_pid=
+  window_pgid=
+  printf 'groups-stopped\n'
+
+  start_session "$run/engine.log" "$run/engine.log" sleep 600
+  engine_pid=$started_pid
+  plant_detached "$run/plant-b"
+  printf 'ready\n'
+  printf 'engine %s\n' "$engine_pid"
+  cat "$run/plant-b"
+  wait "$engine_pid"
+}
+
 drive_twice() {
   local prior
   launch
@@ -570,7 +651,7 @@ fi
 
 for feature in "$@"; do
   case $feature in
-    doctor | at | decode | serve | window | twice) ;;
+    doctor | at | decode | serve | window | twice | hold) ;;
     *)
       printf 'unknown feature: %s\n' "$feature" >&2
       exit 2
@@ -580,6 +661,11 @@ done
 
 if [[ $# -eq 1 && $1 == twice ]]; then
   drive_twice
+  exit 0
+fi
+
+if [[ $# -eq 1 && $1 == hold ]]; then
+  drive_hold
   exit 0
 fi
 
