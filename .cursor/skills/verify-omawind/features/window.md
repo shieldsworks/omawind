@@ -22,9 +22,9 @@ Preconditions:
 - Quickshell and Hyprland are required for the painted window. When they are absent, `window-launch` and `window-painted` are unreachable. Say so. Do not call another transcript a screenshot.
 - Do not exec the start script in `ui/Wind.qml` against the real binary. That script runs `omawind run` with no `--offline`, so it fetches from NOMADS. `scripts/verify.sh engine` is the check that substitutes a stub.
 
-- **Open the window.** Run `./run.sh`. When `quickshell` is missing, the script exits 127 and stderr names `quickshell`. The painted window was not driven.
-- **Engine path.** Run `scripts/verify.sh engine`. A pass prints `All engine-path checks passed.` When Qt6 is missing it prints `Qt6 QML dev packages not installed. Skipped.` and exits 0. Record that line. The skip is not a pass of this feature.
-- **Painted window.** On a Hyprland session, capture the window with `grim`. Save the image under `$run/artifacts/verify/window/`. When Hyprland or Quickshell is absent, record the missing command and leave this step unreached.
+- **Open the window.** Run `./run.sh`. When `quickshell` is missing, the script exits 127 and stderr names `quickshell`. The painted window was not driven. Observed on 2026-10-14. Exit 127, stdout empty, and stderr `./run.sh: line 7: exec: quickshell: not found`.
+- **Engine path.** Run `scripts/verify.sh engine`. A pass prints `All engine-path checks passed.` When Qt6 is missing it prints `Qt6 QML dev packages not installed. Skipped.` and exits 0. Record that line. The skip is not a pass of this feature. Observed on 2026-10-14. Exit 0. The transcript was `Qt6 QML dev packages not installed. Skipped.` and then `All verification steps passed.` The second line is the script's own summary after that skip.
+- **Painted window.** On a Hyprland session, capture the window with `grim`. Save the image under `$run/artifacts/verify/window/`. When Hyprland or Quickshell is absent, record the missing command and leave this step unreached. Observed on 2026-10-14. `quickshell` and `grim` were not on `PATH`. This step was not driven.
 - **Proof.** Save the `./run.sh` stderr and the `scripts/verify.sh engine` transcript under `$run/artifacts/verify/window/`. Do not label them as a window screenshot.
 
 ## Gotchas

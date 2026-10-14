@@ -52,6 +52,16 @@ kill -0 "$(cat "$run/pid")" && echo "pid $(cat "$run/pid") alive"
 
 The version line is this checkout's binary. The pid is the process this run started. The socket is under `$run`. Connect only to that socket. Do not drive an omawind the user already has running. Do not read `~/.config/omawind` or `~/.cache/omawind`.
 
+Observed on 2026-10-14.
+
+```
+omawind 0.1.0
+socket exists
+pid 4782 alive
+```
+
+The pid differs every launch.
+
 ## Drive
 
 Follow `features/`. Start at `features/README.md`. A proof that drives one convenient entry point is incomplete when the map lists others.
@@ -90,6 +100,8 @@ test -d "$evidence"
 ```
 
 Evidence stays under `$evidence`. `$run` is gone. Do not `pkill` by name.
+
+On the 2026-10-14 run the pid was gone, the socket was gone, and `at-berkeley/stdout.txt` was still under `/tmp/omawind-verify-evidence`.
 
 When omawind's commands or the lines it prints change, run `/maintain-verification-skill` over this directory.
 

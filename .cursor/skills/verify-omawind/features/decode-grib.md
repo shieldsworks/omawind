@@ -18,8 +18,8 @@ Preconditions:
 
 - The debug binary is built. No cache and no socket.
 
-- **Hour f01.** The user asks what is in the file. Run `./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2`. Exit code 0. Stdout is four lines, starting with `GUST`, `MSLMA`, `UGRD`, and `VGRD`. Each line contains `grid 82×88` and `valid 2026-09-14T04:00:00Z`.
-- **Missing file.** Run `./target/debug/omawind decode "$run/missing.grib2"`. Exit code is not 0. Stderr contains `missing.grib2`.
+- **Hour f01.** The user asks what is in the file. Run `./target/debug/omawind decode tests/fixtures/hrrr/2026091403/f01.grib2`. Exit code 0. Stdout is four lines, starting with `GUST`, `MSLMA`, `UGRD`, and `VGRD`. Each line contains `grid 82×88` and `valid 2026-09-14T04:00:00Z`. Observed on 2026-10-14. Exit 0, stderr empty, and those four prefixes and tokens were present.
+- **Missing file.** Run `./target/debug/omawind decode "$run/missing.grib2"`. Exit code is not 0. Stderr contains `missing.grib2`. Observed on 2026-10-14. Exit 1 and stderr contained `missing.grib2` and `No such file or directory`.
 - **Proof.** Save stdout, stderr, and the exit code to `$run/artifacts/verify/decode-f01/` and `$run/artifacts/verify/decode-missing/`.
 
 ## Gotchas

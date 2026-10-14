@@ -22,10 +22,10 @@ Preconditions:
 - Doctor passes.
 
 - **Connect.** The user connects. Run the reader below. It prints three lines and exits 0.
-- **Hello.** The first line is `{"type":"hello","v":1,"wind":"0.1.0"}`.
-- **State.** The second line is one JSON object with `"type":"state"`, `"fetch":{"status":"off"}`, `"keel":"lost"`, and `forecast.run` equal to `2026-09-14T03:00:00Z` with `forecast.hours` equal to 3. `"fetch":{"status":"off"}` is how you see that this run did not ask NOAA for a forecast.
-- **Stations.** The third line is one JSON object with `"type":"stations"`, `"source":"NDBC"`, `"status":"off"`, and `"stations":[]`.
-- **No network.** `$run/engine.log` does not contain `nomads.ncep.noaa.gov` or `ndbc.noaa.gov`.
+- **Hello.** The first line is `{"type":"hello","v":1,"wind":"0.1.0"}`. Observed on 2026-10-14. That was the whole first line.
+- **State.** The second line is one JSON object with `"type":"state"`, `"fetch":{"status":"off"}`, `"keel":"lost"`, and `forecast.run` equal to `2026-09-14T03:00:00Z` with `forecast.hours` equal to 3. `"fetch":{"status":"off"}` is how you see that this run did not ask NOAA for a forecast. Observed on 2026-10-14. The line also had `"status":"expired"` and `"note":"no forecast for now: the newest one has run out"`. `ageMinutes` and `here.time` were present and were not compared.
+- **Stations.** The third line is one JSON object with `"type":"stations"`, `"source":"NDBC"`, `"status":"off"`, and `"stations":[]`. Observed on 2026-10-14. The line was `{"source":"NDBC","stations":[],"status":"off","type":"stations","v":1}`.
+- **No network.** `$run/engine.log` does not contain `nomads.ncep.noaa.gov` or `ndbc.noaa.gov`. Observed on 2026-10-14. The log file was empty.
 - **Proof.** Save the three lines and the log to `$run/artifacts/verify/serve-forecast/`.
 
 ```sh

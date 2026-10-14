@@ -23,10 +23,10 @@ Preconditions:
 - Do not pass `--offline`. `at` has no such flag. It only reads the cache.
 - `at-empty` uses a second directory with an empty cache. Do not point it at the fixture cache.
 
-- **Berkeley.** The user asks for the wind at the marina. Run `./target/debug/omawind at 37.8663,-122.3148`. Exit code 0. Stdout matches `tests/golden/at-berkeley.txt` byte for byte.
-- **Home.** The user asks for the wind at home. Run `./target/debug/omawind at`. Exit code 0. Stdout matches the same golden.
-- **Empty cache.** The user asks before any fetch. Run `empty=$(mktemp -d /tmp/omawind-verify-empty.XXXXXX) && mkdir -p "$empty/home" "$empty/cache" "$empty/config" && HOME="$empty/home" XDG_CACHE_HOME="$empty/cache" XDG_CONFIG_HOME="$empty/config" ./target/debug/omawind at 37.8663,-122.3148`. Exit code is not 0. Stderr contains `nothing cached for the region yet`. Remove `$empty` only after the proof is copied out.
-- **Outside.** The user asks for a point far from the grid. Run `./target/debug/omawind at 10,10`. Exit code is not 0. Stderr contains `outside the forecast area`.
+- **Berkeley.** The user asks for the wind at the marina. Run `./target/debug/omawind at 37.8663,-122.3148`. Exit code 0. Stdout matches `tests/golden/at-berkeley.txt` byte for byte. Observed on 2026-10-14. Exit 0, stderr empty, and `diff -u` against the golden printed nothing.
+- **Home.** The user asks for the wind at home. Run `./target/debug/omawind at`. Exit code 0. Stdout matches the same golden. Observed on 2026-10-14. Exit 0, stderr empty, and the same `diff -u` printed nothing.
+- **Empty cache.** The user asks before any fetch. Run `empty=$(mktemp -d /tmp/omawind-verify-empty.XXXXXX) && mkdir -p "$empty/home" "$empty/cache" "$empty/config" && HOME="$empty/home" XDG_CACHE_HOME="$empty/cache" XDG_CONFIG_HOME="$empty/config" ./target/debug/omawind at 37.8663,-122.3148`. Exit code is not 0. Stderr contains `nothing cached for the region yet`. Remove `$empty` only after the proof is copied out. Observed on 2026-10-14. Exit 1 and stderr `omawind: nothing cached for the region yet: run omawind fetch`.
+- **Outside.** The user asks for a point far from the grid. Run `./target/debug/omawind at 10,10`. Exit code is not 0. Stderr contains `outside the forecast area`. Observed on 2026-10-14. Exit 1 and stderr `omawind: that position is outside the forecast area`.
 - **Proof.** Save stdout, stderr, and the exit code to `$run/artifacts/verify/at-berkeley/`, `$run/artifacts/verify/at-home/`, `$run/artifacts/verify/at-empty/`, and `$run/artifacts/verify/at-outside/`.
 
 ## Gotchas
