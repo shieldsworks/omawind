@@ -2,6 +2,7 @@ import QtQuick
 import Quickshell
 import qs.Ui
 import qs.Commons
+import "BarText.js" as BarText
 
 // The forecast wind at the boat in the bar, labeled Wind, in the theme's
 // urgent color at small-craft advisory strength. The forecast, like
@@ -26,19 +27,18 @@ BarWidget {
     }
 
     readonly property var here: Wind.here
-    readonly property string label: "Wind"
-    readonly property string detail: {
-        if (Wind.incompatible) return "omawind speaks another protocol version";
-        if (!Wind.connected) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
-        if (Wind.hasWind) {
-            const summary = Wind.compass(here.dirDeg) + " " + Wind.knots(here.speedKn)
-                + (Wind.gusty(here) ? "G" + Wind.knots(here.gustKn) : "") + " kn";
-            if (Wind.strong) return summary + " — 21 kn or more: small-craft advisory strength";
-            return summary;
-        }
-        if (Wind.fetch && Wind.fetch.status === "downloading") return "Downloading forecast…";
-        return "No wind yet";
-    }
+    readonly property string label: BarText.label()
+    readonly property string detail: BarText.detail({
+        incompatible: Wind.incompatible,
+        connected: Wind.connected,
+        waited: Wind.waited,
+        summary: Wind.hasWind
+            ? Wind.compass(here.dirDeg) + " " + Wind.knots(here.speedKn)
+                + (Wind.gusty(here) ? "G" + Wind.knots(here.gustKn) : "") + " kn"
+            : "",
+        strong: Wind.strong,
+        downloading: !!(Wind.fetch && Wind.fetch.status === "downloading")
+    })
 
     implicitWidth: button.implicitWidth
     implicitHeight: button.implicitHeight
