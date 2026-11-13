@@ -29,7 +29,7 @@ BarWidget {
     readonly property string label: "Wind"
     readonly property string detail: {
         if (Wind.incompatible) return "omawind speaks another protocol version";
-        if (!Wind.connected || !Wind.state) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
+        if (!Wind.connected) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
         if (Wind.hasWind) {
             const summary = Wind.compass(here.dirDeg) + " " + Wind.knots(here.speedKn)
                 + (Wind.gusty(here) ? "G" + Wind.knots(here.gustKn) : "") + " kn";
