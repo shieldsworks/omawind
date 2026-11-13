@@ -9,11 +9,13 @@ that socket. The CLI prints the same forecast for a person at a terminal.
 ## Toolchain
 
 Run `mise install` first. `mise.toml` pins the Rust toolchain (with rustfmt
-and clippy). `Cargo.toml`'s `rust-version` is the minimum the code promises.
-A system cargo older than that fails. `mise tasks` lists every job.
+and clippy) and Node 22. `Cargo.toml`'s `rust-version` is the minimum the
+code promises. A system cargo older than that fails. `mise tasks` lists every
+job.
 
 `curl` is how downloads run, including the station tests that read `file://`
 fixtures. Quickshell runs the window (`./run.sh`). CI does not launch it.
+`tests/bar_text.rs` runs `ui/BarText.js` with the pinned Node.
 
 ## Done means verified
 
