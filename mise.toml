@@ -3,6 +3,7 @@
 
 [tools]
 rust = { version = "1.98", profile = "minimal", components = "rustfmt,clippy" }
+node = "22"
 
 [tasks.build]
 description = "Debug build"

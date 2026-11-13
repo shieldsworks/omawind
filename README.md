@@ -33,8 +33,8 @@ the wind NOAA's stations there measured, and shows the forecast in the bar.
   NDBC works out on the hour, kept with that hour's time.
 - Serves all of that, and wind fields for the chart, over a Unix socket as
   newline-delimited JSON ([docs/protocol.md](docs/protocol.md)).
-- The bar shows it like `WSW 14G19 kn`, in the theme's urgent color at 21
-  knots or more. Click for the hours ahead.
+- The bar is labeled Wind, in the theme's urgent color at 21 knots or more.
+  Hover for the forecast, like `WSW 14G19 kn`. Click for the hours ahead.
 - A window of its own, `./run.sh` or a launcher entry that runs it: the wind
   at the boat, every hour of the forecast, and what the stations are
   measuring, nearest the boat first, with range, bearing and how old each
