@@ -3,9 +3,9 @@ import Quickshell
 import qs.Ui
 import qs.Commons
 
-// The forecast wind at the boat in the bar, like "WSW 14G19 kn", in the
-// theme's urgent color at small-craft advisory strength. Click for the
-// hours ahead.
+// The forecast wind at the boat in the bar, labeled Wind, in the theme's
+// urgent color at small-craft advisory strength. The forecast, like
+// "WSW 14G19 kn", is in the tooltip. Click for the hours ahead.
 BarWidget {
     id: root
     moduleName: "org.omahoy.wind"
@@ -26,14 +26,18 @@ BarWidget {
     }
 
     readonly property var here: Wind.here
-    readonly property string label: {
-        if (Wind.incompatible) return "WIND ?";
-        if (!Wind.connected || !Wind.state) return "WIND";
-        if (Wind.hasWind)
-            return Wind.compass(here.dirDeg) + " " + Wind.knots(here.speedKn)
+    readonly property string label: "Wind"
+    readonly property string detail: {
+        if (Wind.incompatible) return "omawind speaks another protocol version";
+        if (!Wind.connected || !Wind.state) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
+        if (Wind.hasWind) {
+            const summary = Wind.compass(here.dirDeg) + " " + Wind.knots(here.speedKn)
                 + (Wind.gusty(here) ? "G" + Wind.knots(here.gustKn) : "") + " kn";
-        if (Wind.fetch && Wind.fetch.status === "downloading") return "WIND ↓";
-        return "WIND –";
+            if (Wind.strong) return summary + " — 21 kn or more: small-craft advisory strength";
+            return summary;
+        }
+        if (Wind.fetch && Wind.fetch.status === "downloading") return "Downloading forecast…";
+        return "No wind yet";
     }
 
     implicitWidth: button.implicitWidth
@@ -47,12 +51,7 @@ BarWidget {
         foreground: Wind.strong ? Color.urgent : (root.bar ? root.bar.barForeground : Color.foreground)
         // Faded when there's nothing current to show.
         dimmed: !Wind.connected || !Wind.hasWind || Wind.dated || (!!root.here && root.here.stale === true)
-        tooltipText: {
-            if (Wind.incompatible) return "omawind speaks another protocol version";
-            if (!Wind.connected) return Wind.waited ? "omawind isn't running" : "Starting omawind…";
-            if (Wind.strong) return "21 kn or more: small-craft advisory strength";
-            return "";
-        }
+        tooltipText: root.detail
         onPressed: b => {
             if (b === Qt.LeftButton) {
                 if (root.opened) root.close();
